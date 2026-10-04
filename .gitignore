@@ -1,0 +1,22 @@
+# Python environments and the uv-managed interpreter
+.venv/
+envs/
+.uvpython/
+__pycache__/
+*.pyc
+
+# Model weights (downloaded on first run)
+models/
+
+# Audio — never commit source recordings or outputs
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.aac
+*.ogg
+*.opus
+
+# Scratch / intermediate results
+work/
+*.log
