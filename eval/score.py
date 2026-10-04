@@ -1,6 +1,6 @@
 """Score wavs with DNSMOS P.835 (SIG/BAK/OVRL) and UTMOS22. Usage: score.py file1.wav file2.wav ...  (run with the .venv python)
 bw95% = frequency below which 99.5% of the spectral energy above 1 kHz lies (rough effective bandwidth)."""
-import sys, numpy as np, soundfile as sf, torch, librosa, warnings; warnings.filterwarnings("ignore")
+import os, sys, numpy as np, soundfile as sf, torch, librosa, warnings; warnings.filterwarnings("ignore")
 sys.stdout.reconfigure(line_buffering=True)
 from torchmetrics.functional.audio.dnsmos import deep_noise_suppression_mean_opinion_score as dnsmos
 utm = torch.hub.load("tarepan/SpeechMOS:v1.2.0", "utmos22_strong", trust_repo=True).eval()
@@ -17,4 +17,4 @@ for f in sys.argv[1:]:
     # effective bandwidth: freq below which 99.5% of spectral energy above 1k lies
     S = np.abs(librosa.stft(x, n_fft=4096))**2; p = S.mean(1); fr = librosa.fft_frequencies(sr=sr, n_fft=4096)
     m = fr > 1000; c = np.cumsum(p[m]) / p[m].sum(); bw = fr[m][np.searchsorted(c, 0.995)]
-    print(f"{f.split('/')[-1][:42]:42s} {d[1]:5.2f} {d[2]:5.2f} {d[3]:5.2f} {d[0]:5.2f} {np.mean(us):5.2f} {bw:6.0f}")
+    print(f"{os.path.basename(f)[:42]:42s} {d[1]:5.2f} {d[2]:5.2f} {d[3]:5.2f} {d[0]:5.2f} {np.mean(us):5.2f} {bw:6.0f}")

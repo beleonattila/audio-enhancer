@@ -20,3 +20,8 @@ models/
 # Scratch / intermediate results
 work/
 *.log
+
+# enhance.py outputs and model-stage cache
+out/
+cache/
+fixes.json

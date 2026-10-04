@@ -1,12 +1,19 @@
 # audio-enhancer
 
-Restores low-quality smartphone podcast recordings to clean, full-band speech. It is a one-command pipeline built only from free, open-source models, and runs on a 6 GB consumer GPU.
+Restores low-quality smartphone podcast recordings to clean, full-band speech. Its character is tunable, and a fast 3-minute snippet loop lets you find the right sound before processing a whole episode. It is built only from free, open-source models and runs on a 6 GB consumer GPU.
 
 ```bash
-./enhance.sh "episode.mp3"
-# -> "episode - enhanced.wav"  (48 kHz / 24-bit stereo, -16 LUFS)
-# -> "episode - enhanced.mp3"  (192 kbps, original ID3 tags + cover art copied)
+# 1) audition: render a 3-minute section in several flavours (loudness-matched, with the untouched original)
+./enhance.sh raw/episode.mp3 --start 10:00 --preset clean,natural,warm,denoise --include-original
+
+# 2) fine-tune on the same section; model stages are cached, so each render takes ~10-20 s
+./enhance.sh raw/episode.mp3 --start 10:00 --preset natural --mix 30 --set orig_source=raw --name mix30_raw
+
+# 3) render the whole episode with the chosen settings
+./enhance.sh raw/episode.mp3 --preset natural --mix 30 --set orig_source=raw
 ```
+
+Outputs go to `out/<file>/<section>/<name>.wav` (48 kHz / 24-bit stereo, -16 LUFS) and `.mp3` (192 kbps, source tags and cover art copied). A `.json` file next to each output records the exact settings used.
 
 A 66-minute episode takes about 5 minutes on an RTX 4050 Laptop GPU.
 
@@ -19,10 +26,33 @@ A 66-minute episode takes about 5 minutes on an RTX 4050 Laptop GPU.
 | Stage | Tool | What it does |
 |---|---|---|
 | 1 | [**Sidon**](https://github.com/sarulab-speech/Sidon) (`sarulab-speech/sidon-v0.1`) | Generative speech restoration. A multilingual w2v-BERT 2.0 feature predictor plus a vocoder rebuilds clean 48 kHz speech: it removes noise, reverb and codec artifacts and extends the bandwidth. |
-| 2 | [**DeepFilterNet3**](https://github.com/Rikorose/DeepFilterNet), attenuation limit 15 dB | Removes the faint residual noise Sidon leaves in pauses. |
-| 3 | ffmpeg mastering ([scripts/master.sh](scripts/master.sh)) | 80 Hz high-pass, tonal EQ (less boxiness, more presence and air), de-esser, soft downward expander, gentle 2:1 levelling compressor, two-pass linear loudness normalisation to -16 LUFS / -1.5 dBTP. |
+| 2 | [**DeepFilterNet3**](https://github.com/Rikorose/DeepFilterNet) (`dfn_atten`) | Removes the faint residual noise Sidon leaves in pauses. |
+| 3 | Dropout repair (`repair_db`) | Sidon sometimes erases quiet syllables, or a plosive and vowel onset under overlapping speech. Wherever its speech level falls far below the original's, the output crossfades to the EQ-matched, lightly denoised original. Patches closer than 250 ms are merged. Manual fix ranges from `fixes.json` are applied here too. |
+| 4 | Original mix (`orig_mix`, `orig_source`) | A percentage of the original (raw, or lightly denoised) mixed under the enhanced voice, level-matched. It keeps room tone continuous so Sidon's between-phrase gating isn't heard, softens warble on overlapping voices and adds natural texture. |
+| 5 | Tone and dynamics (ffmpeg) | 80 Hz high-pass, EQ (warmth / mud / mid / presence / air), de-esser, optional expander, levelling compressor. |
+| 6 | Room (`room_db`, `room_rt60`) | Optional synthetic stereo small-room reverb, for space and width. |
+| 7 | Loudness | Two-pass linear loudness normalisation to -16 LUFS / -1.5 dBTP. |
 
 Long files are processed in 30 s (Sidon) and 90 s (DeepFilterNet) segments with a 1 s sin²/cos² crossfade, streamed to disk. VRAM peaks at about 2.2 GB and memory use stays flat.
+
+## Presets and parameters
+
+| Preset | Character |
+|---|---|
+| `clean` | sharpest and driest, with silent pauses (the original v1 chain) |
+| `natural` | some room tone, 10% of the original mixed in, a light stereo room, softer highs, gentler levelling |
+| `warm` | fuller low end, rounder highs, more radio-like levelling |
+| `denoise` | no generative model: denoised original plus mastering (most authentic, least improved) |
+
+Override any parameter with `--set key=value`; `--mix N` is a shortcut for `orig_mix`. `./enhance.sh --help` lists them all: `repair_db`, `dfn_atten`, `orig_mix`, `orig_source`, `warmth_db`, `mud_db`, `mid_db`, `presence_db`, `air_db`, `deess`, `expander_db`, `comp_ratio`, `comp_thresh_db`, `room_db`, `room_rt60`, `lufs`.
+
+**Manual fixes.** If you hear an artifact the automatic repair missed, mark it while auditioning a snippet:
+
+```bash
+./enhance.sh raw/episode.mp3 --start 10:00 --preset natural --fix 0:40-0:42@0.6
+```
+
+The time is relative to the snippet; `@0.6` means a 60% fallback to the original. The range is stored in absolute file time in `fixes.json`, and every later render of that file applies it, including the full one. `--clear-fixes` removes a file's stored ranges.
 
 ## How the chain was chosen
 
@@ -68,17 +98,18 @@ ffmpeg is taken from `$FFMPEG`, else from `PATH`, else from the `imageio-ffmpeg`
 ## Repository layout
 
 ```
-enhance.sh                 one-command pipeline (accepts several files)
+enhance.py                 the pipeline: presets, parameters, snippet cache, dropout repair, original mix, fixes
+enhance.sh                 wrapper that runs enhance.py with the .venv python
 setup.sh                   environment setup
 scripts/
   sidon_enhance.py         Sidon restoration, segmented
   dfn_enhance.py           DeepFilterNet3, segmented
   segproc.py               shared segment + crossfade streaming helper
-  master.sh                ffmpeg mastering chain
   common.sh                repo root / python / ffmpeg resolution
 eval/
   score.py                 DNSMOS P.835 + UTMOS22 + effective bandwidth   (.venv)
   floor.py                 pause noise floor relative to speech level
+  dropouts.py              finds spans where an enhanced file lost speech present in the original
   stats.py                 loudness, octave balance, noise-floor spectrum
   spec.py                  stacked comparison spectrograms
 experiments/               runners for the tools that lost the comparison
@@ -95,9 +126,12 @@ Example evaluation:
 
 ## Notes and limitations
 
-- **Generative restoration:** Sidon rebuilds the voice rather than filtering it. It is robust, but it can occasionally soften a consonant or add a slightly metallic timbre, mostly in overlapping speech or laughter. If that happens, `experiments/resemble_run.py --mode enhance --lambd 0.9` is the best alternative.
+- **Generative restoration:** Sidon rebuilds the voice rather than filtering it.
+  - **Dropouts:** it can drop quiet syllables. The automatic dropout repair catches these; check the result with `eval/dropouts.py`.
+  - **Overlapping voices:** when both hosts talk at once, it can warble or gate between phrases. `orig_mix` (20–40%) and manual `--fix` ranges are the remedies.
+- **Recording tips:** the cleanest gains come from recording closer (30–50 cm, or one phone per host) in an uncompressed format (WAV or FLAC, with in-app "enhance", noise reduction and automatic gain turned off).
 - **No studio miracles:** a phone in a living room becomes clean, full and even. It does not become a large-diaphragm condenser in a treated booth.
-- **Mono output:** the output is dual-mono, because the source recordings were effectively mono (L/R correlation 0.999).
+- **Mono voice:** the voice is mono, because the source recordings were effectively mono. Stereo width comes only from the optional synthetic room.
 - **GPU sharing:** don't run several GPU models at once on a 6 GB card. Contention made runs 10–50× slower.
 - **Windows workarounds in the experiment scripts:**
   - resemble-enhance: `deepspeed` is stubbed (training only), and `PosixPath` is mapped to `WindowsPath` so its `hparams.yaml` loads.
