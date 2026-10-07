@@ -27,6 +27,12 @@ def probe_duration(path):
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
+def probe_rate(path):
+    err = subprocess.run([engine.FF, '-hide_banner', '-i', path], capture_output=True, text=True, encoding='utf-8', errors='replace').stderr
+    m = re.search(r'Audio:.*?(\d+) Hz', err)
+    return int(m.group(1)) if m else 44100
+
+
 def peaks(path, start=0.0, dur=None, n=6000):
     """Min/max pairs for the waveform ribbon, decoded at 4 kHz mono (fast even for hour-long files)."""
     cmd = [engine.FF, '-hide_banner', '-loglevel', 'error', '-ss', str(start)] + (['-t', str(dur)] if dur else []) + \
@@ -53,15 +59,30 @@ def preview_wav(src, start, dur, tag):
     return out
 
 
+def spectrogram_png(src, start, dur, w=2400, h=300):
+    """Spectrogram image (ffmpeg showspectrumpic, mono, linear frequency 0..Nyquist), cached per source + section."""
+    d = os.path.join(engine.CACHE, 'spec'); os.makedirs(d, exist_ok=True)
+    st = os.stat(src)
+    flt = f"showspectrumpic=s={w}x{h}:mode=combined:color=magma:scale=log:fscale=lin:legend=0:drange=120:gain=2"
+    out = os.path.join(d, engine.hashlib.sha1(f"{src}|{st.st_size}|{st.st_mtime}|{start}|{dur}|{flt}".encode()).hexdigest()[:16] + '.png')
+    if not os.path.exists(out):
+        cut = ['-ss', str(start)] + (['-t', str(dur)] if dur else [])
+        subprocess.run([engine.FF, '-hide_banner', '-loglevel', 'error', '-y', *cut, '-i', src, '-filter_complex',
+                        f"[0:a:0]aformat=channel_layouts=mono,{flt}[s]", '-map', '[s]', '-frames:v', '1', out], check=True)
+    return out
+
+
 def view(kind):
     if kind == 'output':
         if not S['final']: return None
-        return dict(kind='output', name=os.path.basename(S['final']), duration=engine.info(S['final'])[2],
-                    peaks=peaks(S['final']), url=f"/api/audio/output?t={time.time()}")
+        sr = engine.info(S['final'])[0]
+        return dict(kind='output', name=os.path.basename(S['final']), duration=engine.info(S['final'])[2], nyquist=sr / 2,
+                    peaks=peaks(S['final']), url=f"/api/audio/output?t={time.time()}", spec=f"/api/spectrogram/output?t={time.time()}")
     if not S['path']: return None
     dur = S['end'] - S['start']
-    return dict(kind='input', name=os.path.basename(S['path']), duration=dur, full=S['full'], start=S['start'],
-                peaks=peaks(S['path'], S['start'], dur if S['end'] < S['full'] else None), url=f"/api/audio/input?t={time.time()}")
+    return dict(kind='input', name=os.path.basename(S['path']), duration=dur, full=S['full'], start=S['start'], nyquist=S['sr'] / 2,
+                peaks=peaks(S['path'], S['start'], dur if S['end'] < S['full'] else None), url=f"/api/audio/input?t={time.time()}",
+                spec=f"/api/spectrogram/input?t={time.time()}")
 
 
 @app.get('/')
@@ -81,7 +102,7 @@ def browse():
                filetypes=[['Audio', '*.wav *.flac *.mp3 *.m4a *.ogg *.opus *.aac *.mp4 *.mkv *.mov'], ['All files', '*.*']])
     if not p: return jsonify(ok=False)
     d = probe_duration(p)
-    S.update(path=p, start=0.0, end=d, full=d, final=None)
+    S.update(path=p, start=0.0, end=d, full=d, final=None, sr=probe_rate(p))
     return jsonify(ok=True, view=view('input'))
 
 
@@ -91,7 +112,7 @@ def load():
     p = os.path.abspath(request.json['path'])
     if not os.path.isfile(p): return jsonify(ok=False, error='file not found')
     d = probe_duration(p)
-    S.update(path=p, start=0.0, end=d, full=d, final=None)
+    S.update(path=p, start=0.0, end=d, full=d, final=None, sr=probe_rate(p))
     return jsonify(ok=True, view=view('input'))
 
 
@@ -108,6 +129,14 @@ def audio(kind):
     if S['start'] == 0 and S['end'] >= S['full'] and os.path.splitext(S['path'])[1].lower() in ('.mp3', '.flac', '.wav', '.ogg', '.m4a'):
         return send_file(S['path'], conditional=True)
     return send_file(preview_wav(S['path'], S['start'], S['end'] - S['start'], 'input'), conditional=True)
+
+
+@app.get('/api/spectrogram/<kind>')
+def spectrogram(kind):
+    if kind == 'output':
+        return send_file(spectrogram_png(S['final'], 0, None), mimetype='image/png')
+    whole = S['start'] == 0 and S['end'] >= S['full']
+    return send_file(spectrogram_png(S['path'], S['start'], None if whole else S['end'] - S['start']), mimetype='image/png')
 
 
 @app.post('/api/cut')

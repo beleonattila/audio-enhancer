@@ -195,6 +195,7 @@ function loadView(v) {
   if (ws) { ws.destroy(); ws = null; }
   $('#wave').innerHTML = '';
   sel = null; updateSel();
+  loadSpec(v);
   if (!v) { $('#wave').innerHTML = '<div class="empty">Choose an input file to see its waveform</div>'; return; }
   ws = WaveSurfer.create({
     container: '#wave', height: 110, url: v.url, peaks: [Float32Array.from(v.peaks)], duration: v.duration,
@@ -205,7 +206,10 @@ function loadView(v) {
   regions.enableDragSelection({ color: 'rgba(57,255,136,0.16)' });
   regions.on('region-created', (r) => { regions.getRegions().forEach((x) => x !== r && x.remove()); sel = r; updateSel(); });
   regions.on('region-updated', (r) => { sel = r; updateSel(); });
-  ws.on('timeupdate', (t) => ($('#time').textContent = `${fmt(t)} / ${fmt(v.duration)}`));
+  regions.on('region-update', (r) => { sel = r; updateSel(); });
+  regions.on('region-removed', (r) => { if (sel === r) { sel = null; updateSel(); } });
+  ws.on('timeupdate', (t) => { $('#time').textContent = `${fmt(t)} / ${fmt(v.duration)}`; syncCursor(t); });
+  ws.on('seeking', syncCursor);
   ws.on('ready', () => ($('#time').textContent = `${fmt(0)} / ${fmt(v.duration)}`));
   ws.on('play', () => setPlayIcon(true)); ws.on('pause', () => setPlayIcon(false));
   $('#viewInput').classList.toggle('active', v.kind === 'input');
@@ -216,19 +220,91 @@ function loadView(v) {
     ? (v.duration < v.full - 0.05 ? `Working section ${fmt(v.start)} – ${fmt(v.start + v.duration)} of ${fmt(v.full)} · the pipeline runs on this section` : `Whole file · ${fmt(v.full)}`)
     : `Pipeline output · ${v.name}`;
 }
+// ---------------------------------------------------------------- spectrogram ribbon (server-rendered image)
+function loadSpec(v) {
+  const img = $('#specImg'), msg = $('#specMsg');
+  img.style.display = 'none'; $('#specCursor').style.display = 'none'; $('#specAxis').innerHTML = '';
+  if (!v) { msg.textContent = 'Spectrogram'; msg.style.display = ''; return; }
+  msg.textContent = 'Rendering spectrogram…'; msg.style.display = '';
+  img.onload = () => { img.style.display = 'block'; msg.style.display = 'none'; syncCursor(0); };
+  img.onerror = () => { msg.textContent = 'Spectrogram unavailable'; };
+  img.src = v.spec;
+  const ny = v.nyquist || 22050, step = ny > 16000 ? 5000 : ny > 8000 ? 2000 : 1000;
+  for (let f = 0; f <= ny; f += step) {
+    if (f > 0 && f / ny > 0.97) continue;
+    const sp = document.createElement('span'); sp.style.bottom = `${(f / ny) * 100}%`;
+    sp.textContent = f === 0 ? '0' : `${f / 1000}k`;
+    $('#specAxis').appendChild(sp);
+  }
+}
+function syncCursor(t) {
+  if (!currentView) return;
+  const c = $('#specCursor'); c.style.display = 'block';
+  const now = typeof t === 'number' ? t : (ws ? ws.getCurrentTime() : 0);
+  c.style.left = `${(Math.min(now, currentView.duration) / currentView.duration) * 100}%`;
+}
+function syncSpecSel() {
+  const o = $('#specSel');
+  if (!sel || !currentView) { o.style.display = 'none'; return; }
+  const d = currentView.duration;
+  o.style.display = 'block'; o.style.left = `${(sel.start / d) * 100}%`; o.style.width = `${((sel.end - sel.start) / d) * 100}%`;
+}
+const timeAt = (el, e) => {
+  const r = el.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (currentView ? currentView.duration : 0);
+};
+function clearSelection() { if (regions) regions.clearRegions(); sel = null; updateSel(); }
+
+// a single click (no drag) outside the selected region cancels the selection, on both ribbons
+function clickOutsideClears(el) {
+  let down = null;
+  el.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; }, true);
+  el.addEventListener('pointerup', (e) => {
+    if (!down) return;
+    const click = Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4 && performance.now() - down.t < 500;
+    down = null;
+    if (click && sel) { const t = timeAt(el, e); if (t < sel.start || t > sel.end) clearSelection(); }
+  }, true);
+}
+clickOutsideClears($('#wave'));
+clickOutsideClears($('#spec'));
+
+// drag on the spectrogram selects like on the waveform; a click seeks
+(() => {
+  const el = $('#spec'); let start = null, region = null, moved = false, x0 = 0;
+  el.addEventListener('pointerdown', (e) => {
+    if (!ws || !currentView) return;
+    start = timeAt(el, e); x0 = e.clientX; moved = false; region = null; el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (start === null) return;
+    if (!moved && Math.abs(e.clientX - x0) < 4) return;
+    moved = true;
+    const t = timeAt(el, e), a = Math.min(start, t), b = Math.max(start, t);
+    if (!region) region = regions.addRegion({ start: a, end: b, color: 'rgba(57,255,136,0.16)', drag: true, resize: true });
+    else region.setOptions({ start: a, end: b });
+    sel = region; updateSel();
+  });
+  el.addEventListener('pointerup', (e) => {
+    if (start !== null && !moved && ws) ws.setTime(timeAt(el, e));
+    start = null;
+  });
+})();
+
 function setPlayIcon(playing) { $('#play').innerHTML = `<i data-lucide="${playing ? 'pause' : 'play'}"></i>`; icons(); }
 function updateSel() {
   const has = !!sel;
   $('#selInfo').textContent = has ? `Selection ${fmt(sel.start)} – ${fmt(sel.end)} (${(sel.end - sel.start).toFixed(1)} s)` : 'Drag on the waveform to select';
   $('#cut').disabled = !(has && currentView?.kind === 'input');
   $('#clearSel').disabled = !has;
+  syncSpecSel();
 }
 
 $('#play').onclick = () => ws && ws.playPause();
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && !e.target.closest('input,select,textarea,button')) { e.preventDefault(); ws && ws.playPause(); }
 });
-$('#clearSel').onclick = () => { regions?.clearRegions(); sel = null; updateSel(); };
+$('#clearSel').onclick = clearSelection;
 $('#cut').onclick = async () => {
   if (!sel) return;
   const r = await api('/api/cut', { start: sel.start, end: sel.end });

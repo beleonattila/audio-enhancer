@@ -32,6 +32,13 @@
     <button id="save" class="tool labeled" disabled title="Save the selection (or the whole view) as WAV / FLAC / MP3"><i data-lucide="save"></i>Save</button>
   </div>
   <div id="wave" class="wave"><div class="empty">Choose an input file to see its waveform</div></div>
+  <div id="spec" class="spec">
+    <img id="specImg" alt="">
+    <div id="specSel" class="spec-sel"></div>
+    <div id="specCursor" class="spec-cursor"></div>
+    <div id="specAxis" class="spec-axis"></div>
+    <div id="specMsg" class="empty">Spectrogram</div>
+  </div>
   <div id="cutInfo" class="mono dim small"></div>
 </section>
 
@@ -42,6 +49,36 @@
       <button id="clearPipe" class="link" title="Remove all steps">Clear</button>
     </div>
     <div id="pipeline" class="pipeline"></div>
+  </section>
+
+  <section class="help">
+    <div class="section-title"><span>Rules of thumb</span></div>
+    <div class="help-card">
+      <p class="lead">Typical order, top to bottom:</p>
+      <div class="flow">
+        <span class="chip c">De-reverb</span><span class="arr">→</span>
+        <span class="chip m">Clean</span><span class="arr">→</span>
+        <span class="chip m">Restore</span><span class="arr">→</span>
+        <span class="chip c">Repair &amp; mix</span><span class="arr">→</span>
+        <span class="chip c">Master</span>
+      </div>
+      <ol>
+        <li><b>De-reverb first</b>, on the untouched recording: <i class="c">WPE</i>, <i class="m">RoFormer</i>, <i class="m">UVR DeEcho</i>.
+          Placed after other steps they barely find any reverb. Stereo RoFormer models need real stereo; mono files use the mono model.</li>
+        <li><b>Then a filter-type cleaner</b>: <i class="m">ClearerVoice SE</i>, <i class="m">DeepFilterNet3</i> or <i class="c">FFT denoise</i>.
+          They only filter, so overlapping voices survive. One is usually enough.</li>
+        <li><b>At most one generative step</b>: <i class="m">Sidon</i>, <i class="m">Separate + Sidon</i>, <i class="m">resemble-enhance</i>
+          or <i class="m">VoiceFixer</i>. Use <i class="m">Separate + Sidon</i> when the hosts talk over each other.</li>
+        <li><b>After a generative step</b>: a light <i class="m">DeepFilterNet3</i> (8–15 dB) for leftover noise,
+          then <i class="c">Dropout repair</i> to bring back erased syllables.</li>
+        <li><b>Mix for naturalness</b>: 10–50 % of the input or of a filter-only step (e.g. ClearerVoice SE) hides gating, warble
+          and the sterile sound.</li>
+        <li><b>Master last, in this order</b>: <i class="c">Tone EQ</i> → <i class="c">De-esser</i> → <i class="c">Expander</i> →
+          <i class="c">Compressor</i> → <i class="c">Room</i> → <i class="c">Loudness</i>. Loudness is always the final step.</li>
+      </ol>
+      <p class="tip"><b>Workflow:</b> select ~3 minutes in the ribbon and <b>Cut</b>, tune the pipeline on that snippet
+        (unchanged steps come from cache), compare Input / Output, then <b>Full file</b> and run once more.</p>
+    </div>
   </section>
 
   <aside class="inventory">
