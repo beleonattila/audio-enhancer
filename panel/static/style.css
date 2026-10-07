@@ -1,4 +1,5 @@
 :root {
+  --top-h: 0px;         /* height of the pinned header + ribbons, set from JS */
   --bg: #080b12;
   --panel: #0f1420;
   --panel-2: #141b2b;
@@ -27,13 +28,18 @@ button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { opacity: .35; cursor: default; }
 svg.lucide { width: 18px; height: 18px; stroke-width: 2; }
 
+/* header + ribbons stay pinned at the top while the page scrolls */
+.topbar { position: sticky; top: 0; z-index: 30; background: rgba(8, 11, 18, .94); backdrop-filter: blur(8px);
+          border-bottom: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.tile { scroll-margin-top: calc(var(--top-h) + 12px); }
+.topbar.unpinned { position: relative; box-shadow: none; }
 header { display: flex; align-items: center; gap: 24px; padding: 14px 22px 6px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; letter-spacing: .3px; }
 .brand svg { color: var(--cyan); filter: drop-shadow(0 0 6px var(--cyan)); }
 .hint { color: var(--dim); font-size: 12px; }
 
 /* ---- ribbon ---- */
-.ribbon { margin: 8px 22px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px 8px; }
+.ribbon { margin: 6px 22px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px 8px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .grow { flex: 1; }
 .sep { width: 1px; height: 20px; background: var(--line); }
@@ -44,6 +50,8 @@ header { display: flex; align-items: center; gap: 24px; padding: 14px 22px 6px; 
         border-radius: 8px; padding: 6px 8px; transition: border-color .15s, box-shadow .15s; }
 .tool.labeled { padding: 6px 11px; }
 .tool:not(:disabled):hover { border-color: var(--cyan); box-shadow: var(--glow-c); }
+.tool.pin.on { color: var(--cyan); border-color: var(--cyan); background: rgba(0, 229, 255, .1); box-shadow: var(--glow-c); }
+.tool.pin.on svg { filter: drop-shadow(0 0 4px var(--cyan)); }
 .wave { position: relative; height: 112px; border-radius: 8px; background: #0a0f1a; border: 1px solid var(--line); overflow: hidden; }
 .wave .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); }
 .spec { position: relative; height: 132px; margin-top: 6px; border-radius: 8px; background: #05070d; border: 1px solid var(--line);
@@ -61,7 +69,7 @@ header { display: flex; align-items: center; gap: 24px; padding: 14px 22px 6px; 
 #cutInfo { margin-top: 5px; min-height: 16px; }
 
 /* ---- main ---- */
-main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr) 300px; gap: 16px; padding: 4px 22px 12px; min-height: 0; }
+main { margin-top: 10px; display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr) 300px; gap: 16px; padding: 4px 22px 12px; min-height: 0; }
 .section-title { display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; font-weight: 600; letter-spacing: .4px;
                  text-transform: uppercase; font-size: 12px; color: var(--dim); }
 .section-title span { flex: 1; }
@@ -116,7 +124,7 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 
 /* ---- help ---- */
 .help { min-width: 0; }
-.help-stack { position: sticky; top: 10px; max-height: calc(100vh - 120px); overflow-y: auto; padding-right: 6px;
+.help-stack { position: sticky; top: calc(var(--top-h) + 10px); max-height: max(220px, calc(100vh - var(--top-h) - 100px)); overflow-y: auto; padding-right: 6px;
                scrollbar-width: thin; scrollbar-color: #2a3557 transparent; }
 .help-stack::-webkit-scrollbar { width: 6px; }
 .help-stack::-webkit-scrollbar-thumb { background: #2a3557; border-radius: 3px; }
@@ -152,7 +160,7 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 
 /* ---- inventory ---- */
 .inventory { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 14px 14px; align-self: start;
-             position: sticky; top: 10px; }
+             position: sticky; top: calc(var(--top-h) + 10px); max-height: max(220px, calc(100vh - var(--top-h) - 100px)); overflow-y: auto; }
 .grp { margin: 12px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .3px; }
 .grp.classic { color: var(--cyan); }
 .grp.neural { color: var(--magenta); }
@@ -201,5 +209,5 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 }
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }
-  .inventory { position: static; }
+  .inventory { position: static; max-height: none; overflow: visible; }
 }

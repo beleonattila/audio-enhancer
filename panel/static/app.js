@@ -144,6 +144,9 @@ function render() {
     el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (ready ? ' done' : '') + (showing ? ' showing' : '')
       + (activeUid === t.uid ? ' active' : '');
     el.draggable = !jobRunning; el.dataset.uid = t.uid;
+    el.addEventListener('mousedown', (e) => {
+      el.draggable = !jobRunning && !e.target.closest('.params, input, select, textarea, button');
+    });
     if (ready) el.title = 'Click to show the result after this step in the ribbon';
     el.innerHTML = `<div class="ico"><i data-lucide="${s.icon}"></i></div>
       <div style="min-width:0"><div class="title"><span class="num">${i + 1}</span>${s.short}${showing ? '<span class="tag">in ribbon</span>' : ''}</div>
@@ -533,6 +536,30 @@ function poll() {
     }
   }, 700);
 }
+
+// ---------------------------------------------------------------- pinned top area
+// the pin button in the ribbon toolbar decides whether header + ribbons stay fixed at the top (remembered per browser)
+let pinned = true;
+try { pinned = localStorage.getItem('pinRibbons') !== '0'; } catch {}
+function setTopH() {
+  const top = $('#top');
+  top.classList.toggle('unpinned', !pinned);
+  document.documentElement.style.setProperty('--top-h', pinned ? `${top.offsetHeight}px` : '0px');
+}
+function applyPin() {
+  const b = $('#pin');
+  b.classList.toggle('on', pinned);
+  b.title = pinned ? 'Unpin: let the ribbons scroll with the page' : 'Pin the ribbons to the top of the window';
+  b.innerHTML = `<i data-lucide="${pinned ? 'pin' : 'pin-off'}"></i>`; icons();
+  setTopH();
+}
+$('#pin').onclick = () => {
+  pinned = !pinned;
+  try { localStorage.setItem('pinRibbons', pinned ? '1' : '0'); } catch {}
+  applyPin();
+};
+new ResizeObserver(setTopH).observe($('#top'));
+applyPin();
 
 // ---------------------------------------------------------------- boot
 (async () => {

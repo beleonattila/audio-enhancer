@@ -10,6 +10,7 @@
 <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 </head>
 <body>
+<div id="top" class="topbar">
 <header>
   <div class="brand"><i data-lucide="audio-waveform"></i><span>Audio Enhancer</span></div>
   <div class="hint">Drag tiles from the inventory into the pipeline · drag to reorder · click a tile to edit its settings</div>
@@ -30,6 +31,8 @@
     <button id="clearSel" class="tool labeled" disabled title="Clear the selection"><i data-lucide="x"></i>Clear</button>
     <button id="reset" class="tool labeled" disabled title="Back to the whole file"><i data-lucide="rotate-ccw"></i>Full file</button>
     <button id="save" class="tool labeled" disabled title="Save the selection (or the whole view) as WAV / FLAC / MP3"><i data-lucide="save"></i>Save</button>
+    <span class="sep"></span>
+    <button id="pin" class="tool pin" title="Unpin: let the ribbons scroll with the page"><i data-lucide="pin"></i></button>
   </div>
   <div id="wave" class="wave"><div class="empty">Choose an input file to see its waveform</div></div>
   <div id="spec" class="spec">
@@ -41,6 +44,7 @@
   </div>
   <div id="cutInfo" class="mono dim small"></div>
 </section>
+</div>
 
 <main>
   <section class="pipeline-wrap">
