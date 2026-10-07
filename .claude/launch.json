@@ -5,7 +5,8 @@
       "name": "panel",
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["panel/server.py"],
-      "port": 8765
+      "port": 8765,
+      "autoPort": true
     }
   ]
 }

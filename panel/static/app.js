@@ -18,6 +18,8 @@ let polling = null;
 let runMarks = { running: -1 };     // tile index currently running (survives re-renders)
 let cachedSteps = {};               // uid -> {key, ready}: step results available for the current input + settings
 let jobRunning = false;
+let activeUid = null;                    // tile explained in the "Active step" box ('input' for the input tile)
+let INPUT_HELP = {};
 let shown = { uid: null, index: -1 };   // pipeline tile whose temp result is in the ribbon (kind 'step')
 let outputKey = null;                    // cache key of the last step of the pipeline that produced the Output view
 
@@ -122,15 +124,15 @@ function render() {
   const root = $('#pipeline'); root.innerHTML = '';
   const input = document.createElement('div');
   const showingInput = currentView?.kind === 'input';
-  input.className = 'tile input' + (showingInput ? ' showing' : '');
+  input.className = 'tile input' + (showingInput ? ' showing' : '') + (activeUid === 'input' ? ' active' : '');
   input.innerHTML = `<div class="ico"><i data-lucide="file-audio"></i></div>
     <div><div class="title">Input${showingInput ? '<span class="tag">in ribbon</span>' : ''}</div>
       <div class="sub">${inputName ? inputName : 'Click to choose an audio file'}</div></div>
     <div class="acts">
       <button class="iconbtn restore" title="Show the original input in the ribbon" ${inputName && !showingInput ? '' : 'disabled'}><i data-lucide="undo-2"></i></button>
       <button class="iconbtn" title="Choose file"><i data-lucide="folder-open"></i></button></div>`;
-  input.onclick = browse;
-  input.querySelector('.restore').onclick = (e) => { e.stopPropagation(); showInput(); };
+  input.onclick = () => { setActive('input'); browse(); };
+  input.querySelector('.restore').onclick = (e) => { e.stopPropagation(); setActive('input'); showInput(); };
   root.appendChild(input);
 
   pipeline.forEach((t, i) => {
@@ -139,7 +141,8 @@ function render() {
     const el = document.createElement('div');
     const c = cachedSteps[t.uid], ready = !!(c && c.ready);
     const showing = ready && currentView?.kind === 'step' && currentView.key === c.key;
-    el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (ready ? ' done' : '') + (showing ? ' showing' : '');
+    el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (ready ? ' done' : '') + (showing ? ' showing' : '')
+      + (activeUid === t.uid ? ' active' : '');
     el.draggable = !jobRunning; el.dataset.uid = t.uid;
     if (ready) el.title = 'Click to show the result after this step in the ribbon';
     el.innerHTML = `<div class="ico"><i data-lucide="${s.icon}"></i></div>
@@ -151,12 +154,12 @@ function render() {
         <button class="iconbtn edit" title="Settings"><i data-lucide="${t.open ? 'chevron-up' : 'settings-2'}"></i></button>
         <button class="iconbtn del" title="Remove from pipeline"><i data-lucide="trash-2"></i></button></div>`;
     el.querySelector('.del').onclick = (e) => { e.stopPropagation(); if (locked()) return; pipeline = pipeline.filter((x) => x.uid !== t.uid); changed(); };
-    const toggle = (e) => { e.stopPropagation(); t.open = !t.open; render(); };
+    const toggle = (e) => { e.stopPropagation(); activeUid = t.uid; t.open = !t.open; render(); };
     el.querySelector('.edit').onclick = toggle;
-    el.querySelector('.runto').onclick = (e) => { e.stopPropagation(); runTo(i); };
+    el.querySelector('.runto').onclick = (e) => { e.stopPropagation(); setActive(t.uid); runTo(i); };
     el.addEventListener('click', (e) => {
       if (e.target.closest('.params')) return;
-      if (ready) { e.stopPropagation(); showStep(t, i); } else toggle(e);
+      if (ready) { e.stopPropagation(); setActive(t.uid); showStep(t, i); } else toggle(e);
     });
     el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', JSON.stringify({ src: 'pipe', uid: t.uid })); el.classList.add('dragging'); });
     el.addEventListener('dragend', () => el.classList.remove('dragging'));
@@ -164,12 +167,42 @@ function render() {
     root.appendChild(el);
   });
   root.appendChild(connector(pipeline.length, true));
+  renderStepHelp();
   if (!pipeline.length) {
     const e = document.createElement('div'); e.className = 'empty-pipe';
     e.textContent = 'Drag steps here from the inventory, or click an inventory tile to append it.';
     root.appendChild(e);
   }
   icons();
+}
+
+function setActive(uid) { if (activeUid !== uid) { activeUid = uid; render(); } }
+const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function renderStepHelp() {
+  const box = $('#stepHelp');
+  if (activeUid === 'input') {
+    box.className = 'help-card step-help i';
+    box.innerHTML = `<h4><span class="ico"><i data-lucide="file-audio"></i></span>Input</h4><div>${esc(INPUT_HELP.desc || '')}</div>
+      <p class="where"><b>Position:</b> ${esc(INPUT_HELP.where || '')}</p>`;
+    return;
+  }
+  const i = pipeline.findIndex((t) => t.uid === activeUid);
+  if (i < 0) {
+    activeUid = null; box.className = 'help-card step-help';
+    box.innerHTML = '<p class="lead">Click a tile in the pipeline to see what it does and what its settings mean.</p>';
+    return;
+  }
+  const t = pipeline[i], s = STEPS[t.type];
+  const params = s.params.map((p) => {
+    const v = paramVal(t, p), shown = p.kind === 'ref' ? refLabel(v) : v;
+    const dflt = p.kind === 'ref' ? '' : ` · default ${p.default}`;
+    return `<dt>${esc(p.label)}<span class="val">now <b>${esc(shown)}</b>${dflt}</span></dt><dd>${esc(p.help || '')}</dd>`;
+  }).join('');
+  box.className = `help-card step-help ${s.group === 'neural' ? 'm' : 'c'}`;
+  box.innerHTML = `<h4><span class="ico"><i data-lucide="${s.icon}"></i></span>${i + 1} · ${esc(s.short)}</h4>
+    <div>${esc(s.desc || s.name)}</div>
+    <p class="where"><b>Position:</b> ${esc(s.where || '')}</p>
+    ${params ? `<dl>${params}</dl>` : '<p class="where">No settings.</p>'}`;
 }
 
 function connector(index, last = false) {
@@ -235,7 +268,7 @@ document.addEventListener('drop', (e) => {
   let d; try { d = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
   if (locked()) return;
   let idx = insertIndexAt(e.clientY);
-  if (d.src === 'inv') pipeline.splice(idx, 0, makeTile(d.type));
+  if (d.src === 'inv') { const nt = makeTile(d.type); activeUid = nt.uid; pipeline.splice(idx, 0, nt); }
   else {
     const from = pipeline.findIndex((t) => t.uid === d.uid); if (from < 0) return;
     const [t] = pipeline.splice(from, 1); if (from < idx) idx--; pipeline.splice(idx, 0, t);
@@ -250,7 +283,7 @@ function buildInventory() {
     const b = document.createElement('button'); b.className = `inv ${s.group}`; b.draggable = true;
     b.innerHTML = `<i data-lucide="${s.icon}"></i>`;
     b.addEventListener('dragstart', (e) => { hideTip(); e.dataTransfer.setData('text/plain', JSON.stringify({ src: 'inv', type: s.id })); });
-    b.onclick = () => { if (locked()) return; pipeline.push(makeTile(s.id)); changed(); toast(`Added “${s.short}” to the end of the pipeline`); };
+    b.onclick = () => { if (locked()) return; const nt = makeTile(s.id); activeUid = nt.uid; pipeline.push(nt); changed(); toast(`Added “${s.short}” to the end of the pipeline`); };
     b.addEventListener('mouseenter', () => showTip(b, s));
     b.addEventListener('mouseleave', hideTip);
     (s.group === 'neural' ? $('#invNeural') : $('#invClassic')).appendChild(b);
@@ -271,6 +304,7 @@ window.addEventListener('scroll', hideTip, true);
 function loadView(v) {
   currentView = v;
   if (ws) { ws.destroy(); ws = null; }
+  setPlayIcon(false);
   $('#wave').innerHTML = '';
   sel = null; updateSel();
   loadSpec(v);
@@ -504,6 +538,7 @@ function poll() {
 (async () => {
   const r = await api('/api/steps');
   STEPS = Object.fromEntries(r.steps.map((s) => [s.id, s])); DEFAULT = r.default; OVERRIDES = r.overrides;
+  INPUT_HELP = r.input_help || {};
   buildInventory();
   loadDefault();                     // the page always opens with the full default pipeline
   inputName = r.input; render();

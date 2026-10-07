@@ -255,7 +255,15 @@ def cache_path(key):
 
 
 def registry():
-    return [{k: v for k, v in s.items() if k != 'fn'} for s in STEPS.values()]
+    import help as H
+    out = []
+    for s in STEPS.values():
+        h = H.STEPS.get(s['id'], {})
+        d = {k: v for k, v in s.items() if k != 'fn'}
+        d.update(desc=h.get('desc', ''), where=h.get('where', ''),
+                 params=[dict(p, help=h.get('params', {}).get(p['key'], '')) for p in s['params']])
+        out.append(d)
+    return out
 
 
 # ---- job ------------------------------------------------------------------------------------------------------------

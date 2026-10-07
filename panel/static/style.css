@@ -116,7 +116,9 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 
 /* ---- help ---- */
 .help { min-width: 0; }
-.help-card { position: sticky; top: 10px; background: linear-gradient(180deg, rgba(20, 27, 43, .7), rgba(15, 20, 32, .7));
+.help-stack { position: sticky; top: 10px; }
+.help-stack .section-title + .help-card { margin-bottom: 4px; }
+.help-card { background: linear-gradient(180deg, rgba(20, 27, 43, .7), rgba(15, 20, 32, .7));
              border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px 12px; color: #c3cde8; font-size: 13px; }
 .help-card .lead { margin: 0 0 8px; color: var(--dim); font-size: 12px; }
 .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
@@ -130,6 +132,18 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 .help-card i { font-style: normal; font-weight: 500; }
 .help-card i.c { color: var(--cyan); }
 .help-card i.m { color: var(--magenta); }
+.step-help h4 { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 14px; color: var(--text); }
+.step-help h4 .ico { width: 30px; height: 30px; border-radius: 8px; }
+.step-help h4 .ico svg { width: 16px; height: 16px; }
+.step-help .where { margin: 6px 0 8px; font-size: 12px; color: var(--dim); }
+.step-help .where b { color: var(--text); }
+.step-help dl { margin: 8px 0 0; display: grid; gap: 7px; padding-top: 8px; border-top: 1px solid var(--line); }
+.step-help dt { font-weight: 600; color: var(--text); font-size: 12px; }
+.step-help dt .val { font-family: 'JetBrains Mono', monospace; font-weight: 400; color: var(--dim); margin-left: 6px; }
+.step-help dt .val b { color: var(--lime); font-weight: 600; }
+.step-help dd { margin: 2px 0 0; font-size: 12px; color: #aeb9d6; }
+.step-help.c h4 .ico { --c: var(--cyan); } .step-help.m h4 .ico { --c: var(--magenta); } .step-help.i h4 .ico { --c: var(--lime); }
+.tile.active { outline: 1px dashed color-mix(in srgb, var(--c) 70%, transparent); outline-offset: 3px; }
 .help-card .tip { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px; }
 
 /* ---- inventory ---- */
@@ -179,7 +193,7 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 @media (max-width: 1150px) {
   main { grid-template-columns: minmax(0, 1fr) 300px; }
   .help { grid-column: 1 / -1; order: 3; }
-  .help-card { position: static; }
+  .help-stack { position: static; }
 }
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }

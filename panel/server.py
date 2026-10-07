@@ -105,7 +105,8 @@ def index():
 
 @app.get('/api/steps')
 def steps():
-    return jsonify(steps=engine.registry(), default=engine.DEFAULT_PIPELINE, overrides=engine.DEFAULT_OVERRIDES,
+    import help as H
+    return jsonify(steps=engine.registry(), default=engine.DEFAULT_PIPELINE, overrides=engine.DEFAULT_OVERRIDES, input_help=H.INPUT,
                    input=os.path.basename(S['path']) if S['path'] else None)
 
 
