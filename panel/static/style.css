@@ -116,7 +116,11 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 
 /* ---- help ---- */
 .help { min-width: 0; }
-.help-stack { position: sticky; top: 10px; }
+.help-stack { position: sticky; top: 10px; max-height: calc(100vh - 120px); overflow-y: auto; padding-right: 6px;
+               scrollbar-width: thin; scrollbar-color: #2a3557 transparent; }
+.help-stack::-webkit-scrollbar { width: 6px; }
+.help-stack::-webkit-scrollbar-thumb { background: #2a3557; border-radius: 3px; }
+.help-stack::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
 .help-stack .section-title + .help-card { margin-bottom: 4px; }
 .help-card { background: linear-gradient(180deg, rgba(20, 27, 43, .7), rgba(15, 20, 32, .7));
              border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px 12px; color: #c3cde8; font-size: 13px; }
@@ -193,7 +197,7 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 @media (max-width: 1150px) {
   main { grid-template-columns: minmax(0, 1fr) 300px; }
   .help { grid-column: 1 / -1; order: 3; }
-  .help-stack { position: static; }
+  .help-stack { position: static; max-height: none; overflow: visible; }
 }
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }

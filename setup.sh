@@ -1,7 +1,8 @@
 #!/bin/bash
 # Creates the Python environments with uv (https://docs.astral.sh/uv/).
-#   ./setup.sh          main pipeline: .venv (ffmpeg + evaluation), envs/sidon, envs/dfn
-#   ./setup.sh --all    also the comparison tools in experiments/: envs/resemble, envs/clearvoice, envs/vf
+#   ./setup.sh          main pipeline + control panel: .venv (ffmpeg, evaluation, Flask, WPE), envs/sidon, envs/dfn
+#   ./setup.sh --all    also envs/clearvoice (ClearerVoice SE/SR, speaker separation), envs/sep (RoFormer / UVR de-reverb),
+#                       envs/resemble and envs/vf
 # Each tool gets its own venv because their dependency pins conflict. Python 3.11, PyTorch 2.5.1 + CUDA 12.4.
 set -e
 cd "$(dirname "$0")"
@@ -16,7 +17,7 @@ mkenv() {  # mkenv <dir> <packages...>
   [ $# -eq 0 ] || uv pip install --python "$(pyenv "$dir")" "$@"
 }
 
-mkenv .venv imageio-ffmpeg numpy scipy soundfile librosa pyloudnorm matplotlib torchmetrics onnxruntime requests
+mkenv .venv imageio-ffmpeg numpy scipy soundfile librosa pyloudnorm matplotlib torchmetrics onnxruntime requests flask nara_wpe
 mkenv envs/sidon "transformers==5.18.0" huggingface_hub soundfile numpy
 mkenv envs/dfn "deepfilternet==0.5.6" soundfile "numpy<2"
 
@@ -32,5 +33,10 @@ if [ "$1" = "--all" ]; then
   sed -i 's/outputs = generator_output\.squeeze()/outputs = generator_output.reshape(b, -1)/' "$DB"
 
   mkenv envs/vf voicefixer soundfile
+
+  # audio-separator (RoFormer / UVR de-reverb) shells out to `ffmpeg`: put a copy next to its executables
+  mkenv envs/sep "audio-separator[gpu]"
+  FFBIN="$("$(pyenv .venv)" -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+  if [ -d envs/sep/Scripts ]; then cp "$FFBIN" envs/sep/Scripts/ffmpeg.exe; else cp "$FFBIN" envs/sep/bin/ffmpeg; fi
 fi
 echo "setup complete"

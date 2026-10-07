@@ -17,6 +17,8 @@ Outputs go to `out/<file>/<section>/<name>.wav` (48 kHz / 24-bit stereo, -16 LUF
 
 A 66-minute episode takes about 5 minutes on an RTX 4050 Laptop GPU.
 
+Prefer a visual workflow? The [control panel](#control-panel) builds and runs the same pipelines with drag-and-drop tiles, a waveform + spectrogram view and step-by-step previews.
+
 ![Before / after spectrogram](docs/before_after_spectrogram.png)
 
 *Top: the original, a smartphone recording at 68 kbps MP3. Its band ends around 10 kHz and the MP3 encoding left holes above 5 kHz. Bottom: the enhanced output, full band to 20+ kHz with clean, continuous voice harmonics.*
@@ -37,26 +39,48 @@ Long files are processed in 30 s (Sidon) and 90 s (DeepFilterNet) segments with 
 
 ## Control panel
 
-A local web UI for building and running pipelines visually. Start it by double-clicking `panel.bat`, or run:
+![Control panel](docs/control_panel.jpg)
+
+A local web UI for building, auditioning and running pipelines visually. Start it by double-clicking `panel.bat`, or run:
 
 ```bash
 .venv/Scripts/python.exe panel/server.py      # then open http://127.0.0.1:8765
 ```
 
-- **Input tile:** click it to choose a file in the native file dialog.
-- **Waveform ribbon:**
-  - drag to select a region; **Cut** makes that region the working input (a quick way to test a 3-minute snippet), **Full file** goes back;
-  - **Save** writes the selection, or the whole view, as WAV / FLAC / MP3;
-  - switch between **Input** and **Output** to compare.
-- **Pipeline:**
-  - drag steps in from the inventory (classic manipulations / neural networks), drag tiles to reorder, use the bin icon to remove;
-  - click a tile to edit its settings; **Mix** can blend with the input or with any earlier step.
-- **Run:**
-  - with **Save all steps** ticked, every intermediate result is written as well as `final.wav` / `final.mp3`;
-  - output goes to `out/panel/<file>/<timestamp>/`, and the progress bar shows the running step.
-- **Caching:** step results are cached in `cache/panel/`, so changing a later step re-runs only from that step on.
+**Ribbons:** the top of the page shows the audio twice, with the same time axis, playhead and selection.
+- The **waveform** and the **spectrogram** (0 to 20+ kHz, rendered on the server, so even hour-long files load fast). The spectrogram makes it easy to see what a step did, e.g. the high frequencies Sidon rebuilds.
+- Drag on either ribbon to select. A single click outside the selection cancels it; a click inside it only moves the playhead.
+- **Cut** makes the selection the working input, a quick way to tune on a 3-minute snippet; **Full file** goes back.
+- **Save** writes the selection, or the whole shown audio, as WAV / FLAC / MP3.
+- **Input / Output** switches between the original and the last full run's result.
 
-The default pipeline is ClearerVoice SE → Separate + Sidon → DeepFilterNet3 → Dropout repair → Mix 50% with step 1 → EQ → De-esser → Compressor → Room → Loudness. Steps that use the ClearerVoice, RoFormer, resemble-enhance or VoiceFixer models need `./setup.sh --all`. The RoFormer de-reverb step also needs `envs/sep`, which `--all` doesn't build yet: create it with `uv venv --python 3.11 envs/sep` and install `torch`/`torchaudio` (cu124) and `audio-separator[gpu]` into it.
+**Pipeline:** a vertical chain of tiles, starting with the fixed **Input** tile.
+- Click the Input tile to choose a file; its ↶ button brings the original input back into the ribbons.
+- Drag steps in from the **inventory** (classic manipulations in cyan, neural networks in magenta; hover an icon for its full name).
+- Drag tiles to reorder them, use the bin icon to remove one, and the gear icon to edit its settings.
+- **Mix** can blend with the input or any earlier step, e.g. 50 % of a filter-only step under a generative one.
+
+**Run to any step:** every tile has a ▶ button that runs the pipeline up to and including that step.
+- The step's result is shown in the ribbons as a temporary result; nothing is written to `out/`.
+- Steps that already have a result get a ✓, and their ▶ is greyed out. Click such a tile to show its result again.
+- The tile shown in the ribbons is highlighted (**IN RIBBON**).
+- Results stay valid only while nothing changes. Editing a step's settings, reordering, deleting, or changing the input re-activates the ▶ of the affected steps.
+- If the result in the ribbons became invalid, playback stops and the ribbons fall back to the last still-valid step, or to the input.
+
+**Full run:**
+- **Run** processes the whole pipeline. With **Save all steps** ticked, every intermediate result is written as well as `final.wav` / `final.mp3`.
+- Output goes to `out/panel/<file>/<timestamp>/`. The progress bar shows the running step, and **Open folder** opens the result.
+- The pipeline is locked while a run is in progress (**Cancel** to edit).
+
+**Caching:** step results are cached in `cache/panel/`, keyed by the input section, the steps before them and all their settings. Changing a later step re-runs only from that step on.
+
+**Help:** the middle column has two cards.
+- **Rules of thumb** gives the recommended step order: de-reverb → clean → restore → repair & mix → master.
+- **Active step** explains the tile you last clicked, ran or added: what the step does and where it belongs in the chain. It also lists every setting with its current value, default, recommended range and what changing it does to the sound. The texts are in [panel/help.py](panel/help.py).
+
+**Default pipeline:** ClearerVoice SE → Separate + Sidon → DeepFilterNet3 → Dropout repair → Mix 50 % with step 1 → Tone EQ → De-esser → Compressor → Room → Loudness.
+
+The ClearerVoice, Separate + Sidon, RoFormer / UVR, resemble-enhance and VoiceFixer steps need the extra environments from `./setup.sh --all`.
 
 ## Presets and parameters
 
@@ -110,8 +134,8 @@ Requirements:
 - bash (Git Bash on Windows).
 
 ```bash
-./setup.sh          # .venv (ffmpeg + evaluation tools), envs/sidon, envs/dfn
-./setup.sh --all    # also envs/resemble, envs/clearvoice, envs/vf for the comparison scripts
+./setup.sh          # .venv (ffmpeg, evaluation, control panel), envs/sidon, envs/dfn
+./setup.sh --all    # also envs/clearvoice, envs/sep (RoFormer / UVR), envs/resemble, envs/vf
 ```
 
 Each tool gets its own Python 3.11 venv with PyTorch 2.5.1 + CUDA 12.4, because their dependency pins conflict. Model weights download from Hugging Face into `models/` on first run.
@@ -125,8 +149,9 @@ enhance.py                 the pipeline: presets, parameters, snippet cache, dro
 enhance.sh                 wrapper that runs enhance.py with the .venv python
 panel.bat                  starts the control panel (panel/server.py) and opens it in the browser
 panel/
-  server.py                Flask API: file dialogs, waveform peaks, cut/save, run/progress/cancel
+  server.py                Flask API: file dialogs, waveform peaks, spectrograms, cut/save, run / run-to-step, progress
   engine.py                step registry (classic + neural), cached step execution, progress parsing
+  help.py                  explanations of every step and setting shown in the panel
   static/                  the UI (index.html, app.js, style.css; wavesurfer.js and Lucide icons from CDN)
 setup.sh                   environment setup
 scripts/
@@ -176,6 +201,11 @@ Example evaluation:
 [VoiceFixer](https://github.com/haoheliu/voicefixer) ·
 [DNSMOS](https://github.com/microsoft/DNS-Challenge) ·
 [SpeechMOS / UTMOS22](https://github.com/tarepan/SpeechMOS) ·
+[python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) with the MelBand RoFormer de-reverb models by anvuew and the UVR models ·
+[nara_wpe](https://github.com/fgnt/nara_wpe) ·
+[wavesurfer.js](https://wavesurfer.xyz/) ·
+[Lucide](https://lucide.dev/) icons ·
+[Flask](https://flask.palletsprojects.com/) ·
 [FFmpeg](https://ffmpeg.org/).
 
 Each model is subject to its own license; check the linked repositories before commercial use.
