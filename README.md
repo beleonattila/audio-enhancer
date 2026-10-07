@@ -35,6 +35,29 @@ A 66-minute episode takes about 5 minutes on an RTX 4050 Laptop GPU.
 
 Long files are processed in 30 s (Sidon) and 90 s (DeepFilterNet) segments with a 1 s sin²/cos² crossfade, streamed to disk. VRAM peaks at about 2.2 GB and memory use stays flat.
 
+## Control panel
+
+A local web UI for building and running pipelines visually. Start it by double-clicking `panel.bat`, or run:
+
+```bash
+.venv/Scripts/python.exe panel/server.py      # then open http://127.0.0.1:8765
+```
+
+- **Input tile:** click it to choose a file in the native file dialog.
+- **Waveform ribbon:**
+  - drag to select a region; **Cut** makes that region the working input (a quick way to test a 3-minute snippet), **Full file** goes back;
+  - **Save** writes the selection, or the whole view, as WAV / FLAC / MP3;
+  - switch between **Input** and **Output** to compare.
+- **Pipeline:**
+  - drag steps in from the inventory (classic manipulations / neural networks), drag tiles to reorder, use the bin icon to remove;
+  - click a tile to edit its settings; **Mix** can blend with the input or with any earlier step.
+- **Run:**
+  - with **Save all steps** ticked, every intermediate result is written as well as `final.wav` / `final.mp3`;
+  - output goes to `out/panel/<file>/<timestamp>/`, and the progress bar shows the running step.
+- **Caching:** step results are cached in `cache/panel/`, so changing a later step re-runs only from that step on.
+
+The default pipeline is ClearerVoice SE → Separate + Sidon → DeepFilterNet3 → Dropout repair → Mix 50% with step 1 → EQ → De-esser → Compressor → Room → Loudness. Steps that use the ClearerVoice, RoFormer, resemble-enhance or VoiceFixer models need `./setup.sh --all`. The RoFormer de-reverb step also needs `envs/sep`, which `--all` doesn't build yet: create it with `uv venv --python 3.11 envs/sep` and install `torch`/`torchaudio` (cu124) and `audio-separator[gpu]` into it.
+
 ## Presets and parameters
 
 | Preset | Character |
@@ -100,10 +123,17 @@ ffmpeg is taken from `$FFMPEG`, else from `PATH`, else from the `imageio-ffmpeg`
 ```
 enhance.py                 the pipeline: presets, parameters, snippet cache, dropout repair, original mix, fixes
 enhance.sh                 wrapper that runs enhance.py with the .venv python
+panel.bat                  starts the control panel (panel/server.py) and opens it in the browser
+panel/
+  server.py                Flask API: file dialogs, waveform peaks, cut/save, run/progress/cancel
+  engine.py                step registry (classic + neural), cached step execution, progress parsing
+  static/                  the UI (index.html, app.js, style.css; wavesurfer.js and Lucide icons from CDN)
 setup.sh                   environment setup
 scripts/
   sidon_enhance.py         Sidon restoration, segmented
   dfn_enhance.py           DeepFilterNet3, segmented
+  separate.py              2-speaker separation (ClearerVoice MossFormer2 SS), level-consistent, speaker order tracked
+  wpe_run.py               WPE dereverberation (classical), segmented, keeps stereo
   segproc.py               shared segment + crossfade streaming helper
   common.sh                repo root / python / ffmpeg resolution
 eval/

@@ -9,7 +9,7 @@ Outputs go to out/<input name>/<section>/<name>.wav (+ .mp3). Expensive model st
 cache/, so re-rendering a section with different mastering parameters takes seconds.
 
 Signal flow:
-  source -> [Sidon restore] -> [DeepFilterNet, dfn_atten dB] -> dropout repair (repair_db) -> mix with the original (orig_mix %, orig_source)
+  source -> [ClearerVoice SE, pre=cvse] -> [Sidon restore] -> [DeepFilterNet, dfn_atten dB] -> dropout repair (repair_db) -> mix with the original (orig_mix %, orig_source)
          -> high-pass, EQ (warmth / mud / mid / presence / air) -> de-esser -> expander -> compressor
          -> + stereo synthetic room (room_db, room_rt60) -> loudness normalisation (lufs, true peak -1.5 dBTP)
 """
@@ -23,25 +23,28 @@ SR = 48000
 # ---- parameters -------------------------------------------------------------------------------------------
 PRESETS = {
     # sharp, dry, silent pauses: the original v1 chain
-    'clean':   dict(repair_db=12, restore='sidon', dfn_atten=15, orig_mix=0, orig_source='clean', warmth_db=0.0, mud_db=-1.5, mid_db=2.0, presence_db=2.5,
+    'clean':   dict(repair_db=12, pre='none', restore='sidon', dfn_atten=15, orig_mix=0, orig_source='clean', warmth_db=0.0, mud_db=-1.5, mid_db=2.0, presence_db=2.5,
                     air_db=1.5, deess=0.35, expander_db=10, comp_ratio=2.0, comp_thresh_db=-20, room_db=None, room_rt60=0.35, lufs=-16),
     # keeps some room tone and texture, a touch of real-sounding space, softer top end
-    'natural': dict(repair_db=12, restore='sidon', dfn_atten=8, orig_mix=10, orig_source='clean', warmth_db=1.0, mud_db=-1.0, mid_db=1.0, presence_db=1.5,
+    'natural': dict(repair_db=12, pre='none', restore='sidon', dfn_atten=8, orig_mix=10, orig_source='clean', warmth_db=1.0, mud_db=-1.0, mid_db=1.0, presence_db=1.5,
                     air_db=0.5, deess=0.25, expander_db=0, comp_ratio=1.6, comp_thresh_db=-20, room_db=-24, room_rt60=0.35, lufs=-16),
     # radio-like: fuller low end, rounder highs, a bit more levelling
-    'warm':    dict(repair_db=12, restore='sidon', dfn_atten=10, orig_mix=0, orig_source='clean', warmth_db=2.5, mud_db=-0.5, mid_db=0.5, presence_db=1.0,
+    'warm':    dict(repair_db=12, pre='none', restore='sidon', dfn_atten=10, orig_mix=0, orig_source='clean', warmth_db=2.5, mud_db=-0.5, mid_db=0.5, presence_db=1.0,
                     air_db=-1.0, deess=0.3, expander_db=4, comp_ratio=2.5, comp_thresh_db=-22, room_db=-28, room_rt60=0.3, lufs=-16),
     # no generative model at all: denoised original with mastering (most "authentic", least improved)
-    'denoise': dict(repair_db=None, restore='none', dfn_atten=18, orig_mix=0, orig_source='clean', warmth_db=1.0, mud_db=-1.5, mid_db=2.0, presence_db=3.0,
+    'denoise': dict(repair_db=None, pre='none', restore='none', dfn_atten=18, orig_mix=0, orig_source='clean', warmth_db=1.0, mud_db=-1.5, mid_db=2.0, presence_db=3.0,
                     air_db=2.0, deess=0.2, expander_db=4, comp_ratio=2.0, comp_thresh_db=-20, room_db=None, room_rt60=0.35, lufs=-16),
 }
 DOC = {
+    'pre':            "before Sidon: none | cvse = ClearerVoice SE 48k | sep = split the 2 speakers, Sidon each, sum | "
+                      "cvse_sep = cvse then sep (cvse/sep need setup.sh --all)",
     'restore':        "sidon = generative restoration (full band, dry, very clean) | none = keep original voice, denoise only",
     'repair_db':      "dropout repair: where Sidon is this many dB quieter than the original speech, fall back to the original (none = off)",
     'dfn_atten':      "DeepFilterNet max noise reduction in dB after restoration; 0 = stage off. Lower = more natural room tone",
     'orig_mix':       "percent of the ORIGINAL in the final mix (0-100, loudness-matched; 30 = 30% original + 70% enhanced). "
                       "Keeps room tone continuous, hides Sidon's on/off gating and warble, adds natural texture",
-    'orig_source':    "which original to mix in: raw = untouched recording, clean = lightly denoised (DeepFilterNet 12 dB)",
+    'orig_source':    "what to mix in: raw = untouched recording, clean = lightly denoised (DeepFilterNet 12 dB), "
+                      "cvse = ClearerVoice SE 48k (filtered only, no re-synthesis)",
     'warmth_db':      "low shelf at 180 Hz: body / chest",
     'mud_db':         "bell at 250 Hz: negative removes boxy room sound",
     'mid_db':         "bell at 1.2 kHz: forwardness / intelligibility",
@@ -157,11 +160,42 @@ class Cache:
             ff(*cut, '-i', self.src, '-map', '0:a:0', '-ac', '1', '-c:a', 'pcm_f32le', o)
         return self.get('source', make)
 
-    def sidon(self):
-        return self.get('sidon', lambda o: run([pyenv('envs/sidon'), os.path.join(ROOT, 'scripts', 'sidon_enhance.py'), self.source(), o, '--seg', '30']))
+    def cvse(self):
+        """ClearerVoice-Studio MossFormer2_SE_48K speech enhancement of the source (envs/clearvoice, setup.sh --all)."""
+        return self.get('cvse', lambda o: run([pyenv('envs/clearvoice'), os.path.join(ROOT, 'experiments', 'clearvoice_run.py'), self.source(), o, 'se48']))
+
+    def _sidon_run(self, inp, out):
+        run([pyenv('envs/sidon'), os.path.join(ROOT, 'scripts', 'sidon_enhance.py'), inp, out, '--seg', '30'])
+
+    def sep_sidon(self, on):
+        """Separate the two speakers (ClearerVoice MossFormer2_SS_16K), restore each voice alone with Sidon,
+        restore their relative levels and sum. Sidon then never sees two overlapping voices."""
+        src = self.source() if on == 'source' else self.cvse()
+
+        def make(o):
+            pre = os.path.join(self.dir, f"{on}_sep")
+            if not os.path.exists(pre + '_2.wav'):
+                run([pyenv('envs/clearvoice'), os.path.join(ROOT, 'scripts', 'separate.py'), src, pre])
+            total = None
+            for i in (1, 2):
+                restored = f"{pre}_{i}_sidon.wav"
+                if not os.path.exists(restored):
+                    self._sidon_run(f"{pre}_{i}.wav", restored)
+                xi, yi = read48(f"{pre}_{i}.wav"), read48(restored)
+                yi *= np.sqrt(np.mean(xi ** 2)) / max(np.sqrt(np.mean(yi ** 2)), 1e-9)   # Sidon normalises level per file
+                total = yi if total is None else total[:len(yi)] + yi[:len(total)]
+            sf.write(o, total, SR, subtype='FLOAT')
+        return self.get(('' if on == 'source' else 'cvse_') + 'sep_sidon', make)
+
+    def sidon(self, pre='none'):
+        if pre in ('sep', 'cvse_sep'):
+            return self.sep_sidon('source' if pre == 'sep' else 'cvse')
+        stage, inp = ('sidon', self.source) if pre == 'none' else ('cvse_sidon', self.cvse)
+        return self.get(stage, lambda o: self._sidon_run(inp(), o))
 
     def dfn(self, inp_stage, atten):
-        inp = self.sidon() if inp_stage == 'sidon' else self.source()
+        inp = {'sidon': self.sidon, 'cvse_sidon': lambda: self.sidon('cvse'), 'sep_sidon': lambda: self.sidon('sep'),
+               'cvse_sep_sidon': lambda: self.sidon('cvse_sep')}.get(inp_stage, self.source)()
         return self.get(f"{inp_stage}_dfn{atten:g}", lambda o: run([pyenv('envs/dfn'), os.path.join(ROOT, 'scripts', 'dfn_enhance.py'), inp, o, '--atten', str(atten)]))
 
 
@@ -290,7 +324,8 @@ def render(cache, p, name):
     t0 = time.time()
     # 1) restoration + residual denoise
     if p['restore'] == 'sidon':
-        voice = cache.dfn('sidon', p['dfn_atten']) if p['dfn_atten'] else cache.sidon()
+        base = {'none': 'sidon', 'cvse': 'cvse_sidon', 'sep': 'sep_sidon', 'cvse_sep': 'cvse_sep_sidon'}[p['pre']]
+        voice = cache.dfn(base, p['dfn_atten']) if p['dfn_atten'] else cache.sidon(p['pre'])
     else:
         voice = cache.dfn('source', p['dfn_atten'] or 12)
     x = read48(voice)
@@ -308,7 +343,7 @@ def render(cache, p, name):
     # 3) mix with the original: orig_mix % original + (100 - orig_mix) % enhanced, both matched to the same speech level
     if p['orig_mix'] and p['restore'] == 'sidon':
         m = p['orig_mix'] / 100
-        orig = read48(cache.source() if p['orig_source'] == 'raw' else cache.dfn('source', 12))[:len(x)]
+        orig = read48({'raw': cache.source, 'cvse': cache.cvse}.get(p['orig_source'], lambda: cache.dfn('source', 12))())[:len(x)]
         x = x[:len(orig)]
         x = (1 - m) * x + m * orig * (speech_rms(x) / max(speech_rms(orig), 1e-9))
     pre = os.path.join(cache.dir, f"_mix_{os.getpid()}.wav"); sf.write(pre, x, SR, subtype='FLOAT')
@@ -318,7 +353,8 @@ def render(cache, p, name):
              f"lowshelf=f=180:g={p['warmth_db']}", f"equalizer=f=250:t=o:w=1.2:g={p['mud_db']}",
              f"equalizer=f=1200:t=o:w=1.5:g={p['mid_db']}", f"equalizer=f=4200:t=o:w=1.3:g={p['presence_db']}",
              f"highshelf=f=10000:g={p['air_db']}"]
-    if p['deess'] > 0: chain.append(f"deesser=i={p['deess']}:m=0.5:f=0.5")
+    if p['deess'] > 0:  # ffmpeg's deesser goes unstable on samples above full scale: run it 18 dB down
+        chain += ["volume=-18dB", f"deesser=i={p['deess']}:m=0.5:f=0.5", "volume=18dB"]
     if p['expander_db'] > 0:
         chain.append(f"agate=threshold=0.008:ratio=1.6:range={10 ** (-p['expander_db'] / 20):.4f}:attack=8:release=250:knee=4")
     if p['comp_ratio'] > 1:
@@ -384,7 +420,7 @@ def main():
         for kv in a.set:
             k, v = kv.split('=', 1)
             if k not in p: sys.exit(f"unknown parameter '{k}'. Known: {', '.join(p)}")
-            p[k] = None if v.lower() in ('none', 'off') else (v if k in ('restore', 'orig_source') else float(v))
+            p[k] = None if v.lower() in ('none', 'off') else (v if k in ('pre', 'restore', 'orig_source') else float(v))
         name = a.name or (preset + ''.join(f"_{kv.replace('=', '')}" for kv in a.set))
         print(f"* {name}")
         outs.append(render(cache, p, name))

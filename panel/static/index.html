@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Enhancer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand"><i data-lucide="audio-waveform"></i><span>Audio Enhancer</span></div>
+  <div class="hint">Drag tiles from the inventory into the pipeline · drag to reorder · click a tile to edit its settings</div>
+</header>
+
+<section class="ribbon">
+  <div class="toolbar">
+    <div class="seg" role="tablist">
+      <button id="viewInput" class="segbtn active">Input</button>
+      <button id="viewOutput" class="segbtn" disabled>Output</button>
+    </div>
+    <button id="play" class="tool" title="Play / pause (space)"><i data-lucide="play"></i></button>
+    <span id="time" class="mono">0:00.0 / 0:00.0</span>
+    <span class="sep"></span>
+    <span id="selInfo" class="mono dim">Drag on the waveform to select</span>
+    <span class="grow"></span>
+    <button id="cut" class="tool labeled" disabled title="Keep only the selection as the working input"><i data-lucide="scissors"></i>Cut</button>
+    <button id="clearSel" class="tool labeled" disabled title="Clear the selection"><i data-lucide="x"></i>Clear</button>
+    <button id="reset" class="tool labeled" disabled title="Back to the whole file"><i data-lucide="rotate-ccw"></i>Full file</button>
+    <button id="save" class="tool labeled" disabled title="Save the selection (or the whole view) as WAV / FLAC / MP3"><i data-lucide="save"></i>Save</button>
+  </div>
+  <div id="wave" class="wave"><div class="empty">Choose an input file to see its waveform</div></div>
+  <div id="cutInfo" class="mono dim small"></div>
+</section>
+
+<main>
+  <section class="pipeline-wrap">
+    <div class="section-title"><span>Pipeline</span>
+      <button id="resetPipe" class="link" title="Load the default pipeline">Default pipeline</button>
+      <button id="clearPipe" class="link" title="Remove all steps">Clear</button>
+    </div>
+    <div id="pipeline" class="pipeline"></div>
+  </section>
+
+  <aside class="inventory">
+    <div class="section-title"><span>Inventory</span></div>
+    <h3 class="grp classic">Classic manipulations</h3>
+    <div id="invClassic" class="inv-grid"></div>
+    <h3 class="grp neural">Neural networks</h3>
+    <div id="invNeural" class="inv-grid"></div>
+  </aside>
+</main>
+
+<footer class="runbar">
+  <label class="check"><input type="checkbox" id="saveAll"><span class="box"></span>Save all steps</label>
+  <button id="run" class="run"><i data-lucide="play"></i>Run</button>
+  <button id="cancel" class="tool labeled" disabled><i data-lucide="square"></i>Cancel</button>
+  <div class="progress">
+    <div class="bar"><div id="barFill" class="fill"></div></div>
+    <div id="progText" class="mono small">Idle</div>
+  </div>
+  <button id="openFolder" class="tool labeled" disabled><i data-lucide="folder-open"></i>Open folder</button>
+</footer>
+
+<div id="tooltip" class="tooltip"></div>
+<div id="toast" class="toast"></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
