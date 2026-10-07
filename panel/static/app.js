@@ -18,6 +18,8 @@ let polling = null;
 let runMarks = { running: -1 };     // tile index currently running (survives re-renders)
 let cachedSteps = {};               // uid -> {key, ready}: step results available for the current input + settings
 let jobRunning = false;
+let shown = { uid: null, index: -1 };   // pipeline tile whose temp result is in the ribbon (kind 'step')
+let outputKey = null;                    // cache key of the last step of the pipeline that produced the Output view
 
 function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
@@ -34,15 +36,62 @@ function loadDefault() {
       if (typeof v === 'string' && v.startsWith('#')) t.params[k] = pipeline[+v.slice(1) - 1]?.uid || 'input';
   persist();
 }
-function changed() { persist(); render(); refreshCached(); }
-let refreshTimer = null;
-function refreshCached() {
+// Any change to the pipeline or the input invalidates what we know: drop all ready marks immediately (so a stale ✓ can
+// never show on a tile that moved), reset the progress bar, re-check results with the server, and if the ribbon was
+// showing a result that is no longer valid, stop playback and fall back to the last still-valid step (or the input).
+function changed() {
+  persist();
+  cachedSteps = {};
+  if (!jobRunning) resetProgress('Idle · pipeline changed');
+  render();
+  refreshCached(true);
+}
+function locked() {
+  if (jobRunning) toast('The pipeline is locked while a run is in progress (Cancel to edit)', true);
+  return jobRunning;
+}
+function resetProgress(text = 'Idle') {
+  const f = $('#barFill'); f.style.width = '0'; f.classList.remove('indet');
+  $('#progText').textContent = text;
+}
+let refreshTimer = null, refreshSeq = 0;
+function refreshCached(validate = false) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(async () => {
+    const seq = ++refreshSeq;
     if (!inputName) { cachedSteps = {}; render(); return; }
     const r = await api('/api/cached', { pipeline: pipeline.map(({ uid, type, params }) => ({ uid, type, params })) });
-    cachedSteps = r.steps || {}; render();
-  }, 150);
+    if (seq !== refreshSeq) return;                         // a newer check is on its way
+    cachedSteps = r.steps || {};
+    render();
+    if (validate) await validateView();
+  }, 120);
+}
+async function validateView() {
+  if (!currentView) return;
+  if (currentView.kind === 'step') {
+    const i = pipeline.findIndex((t) => t.uid === shown.uid);
+    const c = i >= 0 ? cachedSteps[shown.uid] : null;
+    if (c && c.ready && c.key === currentView.key) {
+      if (i !== shown.index) await showStep(pipeline[i], i, true);    // still valid, only its number changed
+      return;
+    }
+    await fallback(i >= 0 ? i : shown.index, 'The result shown in the ribbon no longer matches the pipeline');
+  } else if (currentView.kind === 'output') {
+    const last = pipeline[pipeline.length - 1], c = last && cachedSteps[last.uid];
+    if (!(c && c.key === outputKey)) {
+      $('#viewOutput').disabled = true;
+      await fallback(pipeline.length, 'The output no longer matches the pipeline');
+    }
+  }
+}
+async function fallback(upto, why) {
+  if (ws) ws.pause();
+  for (let j = Math.min(upto, pipeline.length) - 1; j >= 0; j--) {
+    const c = cachedSteps[pipeline[j].uid];
+    if (c && c.ready) { await showStep(pipeline[j], j); toast(`${why} — showing the result after step ${j + 1}`); return; }
+  }
+  await showInput(); toast(`${why} — showing the input`);
 }
 function persist() { try { localStorage.setItem('pipeline', JSON.stringify(pipeline.map(({ open, ...t }) => t))); } catch {} }
 function restore() {
@@ -91,7 +140,7 @@ function render() {
     const c = cachedSteps[t.uid], ready = !!(c && c.ready);
     const showing = ready && currentView?.kind === 'step' && currentView.key === c.key;
     el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (ready ? ' done' : '') + (showing ? ' showing' : '');
-    el.draggable = true; el.dataset.uid = t.uid;
+    el.draggable = !jobRunning; el.dataset.uid = t.uid;
     if (ready) el.title = 'Click to show the result after this step in the ribbon';
     el.innerHTML = `<div class="ico"><i data-lucide="${s.icon}"></i></div>
       <div style="min-width:0"><div class="title"><span class="num">${i + 1}</span>${s.short}${showing ? '<span class="tag">in ribbon</span>' : ''}</div>
@@ -101,7 +150,7 @@ function render() {
           title="${ready ? 'Result ready: click the tile to show it' : 'Run the pipeline up to this step and show the result'}"><i data-lucide="play"></i></button>
         <button class="iconbtn edit" title="Settings"><i data-lucide="${t.open ? 'chevron-up' : 'settings-2'}"></i></button>
         <button class="iconbtn del" title="Remove from pipeline"><i data-lucide="trash-2"></i></button></div>`;
-    el.querySelector('.del').onclick = (e) => { e.stopPropagation(); pipeline = pipeline.filter((x) => x.uid !== t.uid); changed(); };
+    el.querySelector('.del').onclick = (e) => { e.stopPropagation(); if (locked()) return; pipeline = pipeline.filter((x) => x.uid !== t.uid); changed(); };
     const toggle = (e) => { e.stopPropagation(); t.open = !t.open; render(); };
     el.querySelector('.edit').onclick = toggle;
     el.querySelector('.runto').onclick = (e) => { e.stopPropagation(); runTo(i); };
@@ -153,14 +202,14 @@ function paramsForm(t, idx) {
       let v = inp.value;
       if (p.kind === 'number') v = parseFloat(v);
       else if (p.kind === 'select' && typeof p.default === 'number') v = parseFloat(v);
-      t.params[p.key] = v; persist();
-      inp.closest('.tile').querySelector('.sub').textContent = summary(t);
-      refreshCached();
+      t.params[p.key] = v;
+      changed();
     };
+    inp.disabled = jobRunning;
     lab.appendChild(inp); f.appendChild(lab);
   }
   const rst = document.createElement('button'); rst.className = 'link'; rst.textContent = 'Reset to defaults';
-  rst.onclick = () => { t.params = {}; changed(); };
+  rst.onclick = () => { if (locked()) return; t.params = {}; changed(); };
   f.appendChild(rst);
   return f;
 }
@@ -184,6 +233,7 @@ document.addEventListener('drop', (e) => {
   if (!e.target.closest('.pipeline-wrap')) return;
   e.preventDefault(); markDrop(null);
   let d; try { d = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+  if (locked()) return;
   let idx = insertIndexAt(e.clientY);
   if (d.src === 'inv') pipeline.splice(idx, 0, makeTile(d.type));
   else {
@@ -200,7 +250,7 @@ function buildInventory() {
     const b = document.createElement('button'); b.className = `inv ${s.group}`; b.draggable = true;
     b.innerHTML = `<i data-lucide="${s.icon}"></i>`;
     b.addEventListener('dragstart', (e) => { hideTip(); e.dataTransfer.setData('text/plain', JSON.stringify({ src: 'inv', type: s.id })); });
-    b.onclick = () => { pipeline.push(makeTile(s.id)); changed(); toast(`Added “${s.short}” to the end of the pipeline`); };
+    b.onclick = () => { if (locked()) return; pipeline.push(makeTile(s.id)); changed(); toast(`Added “${s.short}” to the end of the pipeline`); };
     b.addEventListener('mouseenter', () => showTip(b, s));
     b.addEventListener('mouseleave', hideTip);
     (s.group === 'neural' ? $('#invNeural') : $('#invClassic')).appendChild(b);
@@ -335,11 +385,15 @@ document.addEventListener('keydown', (e) => {
 });
 $('#clearSel').onclick = clearSelection;
 $('#cut').onclick = async () => {
-  if (!sel) return;
+  if (!sel || locked()) return;
   const r = await api('/api/cut', { start: sel.start, end: sel.end });
-  if (r.ok) { loadView(r.view); refreshCached(); toast('Working input trimmed to the selection'); }
+  if (r.ok) { outputKey = null; $('#viewOutput').disabled = true; loadView(r.view); changed(); toast('Working input trimmed to the selection'); }
 };
-$('#reset').onclick = async () => { const r = await api('/api/reset', {}); if (r.ok) { loadView(r.view); refreshCached(); } };
+$('#reset').onclick = async () => {
+  if (locked()) return;
+  const r = await api('/api/reset', {});
+  if (r.ok) { outputKey = null; $('#viewOutput').disabled = true; loadView(r.view); changed(); }
+};
 $('#save').onclick = async () => {
   if (!currentView) return;
   const r = await api('/api/save', { kind: currentView.kind, key: currentView.key, start: sel ? sel.start : null, end: sel ? sel.end : null });
@@ -351,16 +405,20 @@ $('#viewOutput').onclick = async () => { const r = await api('/api/view/output')
 async function browse() {
   const r = await api('/api/browse', {});
   if (!r.ok) return;
-  inputName = r.view.name; loadView(r.view); refreshCached();
-  $('#viewOutput').disabled = true;
+  inputName = r.view.name; outputKey = null; $('#viewOutput').disabled = true;
+  loadView(r.view); changed();
 }
 
 async function showInput() {
   const r = await api('/api/view/input'); if (r.ok) loadView(r.view);
 }
-async function showStep(t, i) {
+async function showStep(t, i, relabelOnly = false) {
   const c = cachedSteps[t.uid]; if (!c || !c.ready) return;
   const label = `after step ${i + 1} · ${STEPS[t.type].short}`;
+  shown = { uid: t.uid, index: i };
+  if (relabelOnly && currentView?.kind === 'step') {        // same audio, the tile only moved: keep playback going
+    currentView.name = label; $('#cutInfo').textContent = `Temp result · ${label}`; render(); return;
+  }
   const r = await api(`/api/view/step?key=${c.key}&label=${encodeURIComponent(label)}`);
   if (r.ok) loadView(r.view); else { toast('That result is no longer available, run the step again', true); refreshCached(); }
 }
@@ -400,8 +458,8 @@ $('#run').onclick = async () => {
 };
 $('#cancel').onclick = () => api('/api/cancel', {});
 $('#openFolder').onclick = () => api('/api/open_folder', {});
-$('#resetPipe').onclick = () => { loadDefault(); changed(); };
-$('#clearPipe').onclick = () => { pipeline = []; changed(); };
+$('#resetPipe').onclick = () => { if (locked()) return; loadDefault(); changed(); };
+$('#clearPipe').onclick = () => { if (locked()) return; pipeline = []; changed(); };
 
 function poll() {
   clearInterval(polling);
@@ -424,7 +482,7 @@ function poll() {
     if (!s.running) {
       clearInterval(polling); jobRunning = false; runMarks = { running: -1 };
       $('#run').disabled = false; $('#cancel').disabled = true;
-      if (s.error) { render(); refreshCached(); toast(s.error === 'cancelled' ? 'Run cancelled' : s.error.slice(0, 600), s.error !== 'cancelled'); return; }
+      if (s.error) { render(); refreshCached(true); toast(s.error === 'cancelled' ? 'Run cancelled' : s.error.slice(0, 600), s.error !== 'cancelled'); return; }
       if (s.preview) {
         const i = pipeline.findIndex((t) => t.uid === s.target);
         cachedSteps[s.target] = { key: s.key, ready: true };
@@ -433,6 +491,7 @@ function poll() {
         toast(s.message);
         return;
       }
+      outputKey = s.key;
       $('#viewOutput').disabled = false; $('#openFolder').disabled = false;
       toast('Done — showing the output in the ribbon');
       const v = await api('/api/view/output'); if (v.ok) loadView(v.view);

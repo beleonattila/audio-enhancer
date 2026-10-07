@@ -159,6 +159,7 @@ def spectrogram(kind):
 
 @app.post('/api/cut')
 def cut():
+    if S['job'] and S['job'].state['running']: return jsonify(ok=False, error='a run is in progress')
     a, b = float(request.json['start']), float(request.json['end'])
     S.update(start=S['start'] + a, end=min(S['start'] + b, S['full']))
     return jsonify(ok=True, view=view('input'))
@@ -166,6 +167,7 @@ def cut():
 
 @app.post('/api/reset')
 def reset():
+    if S['job'] and S['job'].state['running']: return jsonify(ok=False, error='a run is in progress')
     S.update(start=0.0, end=S['full'])
     return jsonify(ok=True, view=view('input'))
 

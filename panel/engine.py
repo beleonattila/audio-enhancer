@@ -364,7 +364,8 @@ class Job:
             else:
                 final = os.path.join(self.out_dir, 'final.wav')
                 self._export(prev, final, mp3=True)
-                self.state.update(final=final, fraction=1.0, message=f"Done in {took} -> {self.out_dir}")
+                self.state.update(final=final, key=self.keys[self.pipeline[-1]['uid']], fraction=1.0,
+                                  message=f"Done in {took} -> {self.out_dir}")
         except Cancelled:
             self.state.update(message='Cancelled', error='cancelled')
         except Exception as e:
