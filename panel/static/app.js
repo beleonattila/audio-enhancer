@@ -15,7 +15,9 @@ let pipeline = [];                 // [{uid, type, params, open}]
 let inputName = null;
 let ws = null, regions = null, sel = null, currentView = null;
 let polling = null;
-let runMarks = { running: -1, done: 0 };   // survives re-renders
+let runMarks = { running: -1 };     // tile index currently running (survives re-renders)
+let cachedSteps = {};               // uid -> {key, ready}: step results available for the current input + settings
+let jobRunning = false;
 
 function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
@@ -31,6 +33,16 @@ function loadDefault() {
     for (const [k, v] of Object.entries(t.params))
       if (typeof v === 'string' && v.startsWith('#')) t.params[k] = pipeline[+v.slice(1) - 1]?.uid || 'input';
   persist();
+}
+function changed() { persist(); render(); refreshCached(); }
+let refreshTimer = null;
+function refreshCached() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    if (!inputName) { cachedSteps = {}; render(); return; }
+    const r = await api('/api/cached', { pipeline: pipeline.map(({ uid, type, params }) => ({ uid, type, params })) });
+    cachedSteps = r.steps || {}; render();
+  }, 150);
 }
 function persist() { try { localStorage.setItem('pipeline', JSON.stringify(pipeline.map(({ open, ...t }) => t))); } catch {} }
 function restore() {
@@ -60,28 +72,43 @@ function refLabel(v) {
 function render() {
   const root = $('#pipeline'); root.innerHTML = '';
   const input = document.createElement('div');
-  input.className = 'tile input';
+  const showingInput = currentView?.kind === 'input';
+  input.className = 'tile input' + (showingInput ? ' showing' : '');
   input.innerHTML = `<div class="ico"><i data-lucide="file-audio"></i></div>
-    <div><div class="title">Input</div><div class="sub">${inputName ? inputName : 'Click to choose an audio file'}</div></div>
-    <div class="acts"><button class="iconbtn" title="Choose file"><i data-lucide="folder-open"></i></button></div>`;
+    <div><div class="title">Input${showingInput ? '<span class="tag">in ribbon</span>' : ''}</div>
+      <div class="sub">${inputName ? inputName : 'Click to choose an audio file'}</div></div>
+    <div class="acts">
+      <button class="iconbtn restore" title="Show the original input in the ribbon" ${inputName && !showingInput ? '' : 'disabled'}><i data-lucide="undo-2"></i></button>
+      <button class="iconbtn" title="Choose file"><i data-lucide="folder-open"></i></button></div>`;
   input.onclick = browse;
+  input.querySelector('.restore').onclick = (e) => { e.stopPropagation(); showInput(); };
   root.appendChild(input);
 
   pipeline.forEach((t, i) => {
     root.appendChild(connector(i));
     const s = STEPS[t.type];
     const el = document.createElement('div');
-    el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (i < runMarks.done ? ' done' : '');
+    const c = cachedSteps[t.uid], ready = !!(c && c.ready);
+    const showing = ready && currentView?.kind === 'step' && currentView.key === c.key;
+    el.className = `tile ${s.group}` + (i === runMarks.running ? ' running' : '') + (ready ? ' done' : '') + (showing ? ' showing' : '');
     el.draggable = true; el.dataset.uid = t.uid;
+    if (ready) el.title = 'Click to show the result after this step in the ribbon';
     el.innerHTML = `<div class="ico"><i data-lucide="${s.icon}"></i></div>
-      <div style="min-width:0"><div class="title"><span class="num">${i + 1}</span>${s.short}</div><div class="sub">${summary(t)}</div></div>
+      <div style="min-width:0"><div class="title"><span class="num">${i + 1}</span>${s.short}${showing ? '<span class="tag">in ribbon</span>' : ''}</div>
+        <div class="sub">${summary(t)}</div></div>
       <div class="acts">
+        <button class="iconbtn runto" ${ready || jobRunning || !inputName ? 'disabled' : ''}
+          title="${ready ? 'Result ready: click the tile to show it' : 'Run the pipeline up to this step and show the result'}"><i data-lucide="play"></i></button>
         <button class="iconbtn edit" title="Settings"><i data-lucide="${t.open ? 'chevron-up' : 'settings-2'}"></i></button>
         <button class="iconbtn del" title="Remove from pipeline"><i data-lucide="trash-2"></i></button></div>`;
-    el.querySelector('.del').onclick = (e) => { e.stopPropagation(); pipeline = pipeline.filter((x) => x.uid !== t.uid); runMarks = { running: -1, done: 0 }; persist(); render(); };
+    el.querySelector('.del').onclick = (e) => { e.stopPropagation(); pipeline = pipeline.filter((x) => x.uid !== t.uid); changed(); };
     const toggle = (e) => { e.stopPropagation(); t.open = !t.open; render(); };
     el.querySelector('.edit').onclick = toggle;
-    el.addEventListener('click', (e) => { if (!e.target.closest('.params')) toggle(e); });
+    el.querySelector('.runto').onclick = (e) => { e.stopPropagation(); runTo(i); };
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.params')) return;
+      if (ready) { e.stopPropagation(); showStep(t, i); } else toggle(e);
+    });
     el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', JSON.stringify({ src: 'pipe', uid: t.uid })); el.classList.add('dragging'); });
     el.addEventListener('dragend', () => el.classList.remove('dragging'));
     if (t.open) el.appendChild(paramsForm(t, i));
@@ -128,11 +155,12 @@ function paramsForm(t, idx) {
       else if (p.kind === 'select' && typeof p.default === 'number') v = parseFloat(v);
       t.params[p.key] = v; persist();
       inp.closest('.tile').querySelector('.sub').textContent = summary(t);
+      refreshCached();
     };
     lab.appendChild(inp); f.appendChild(lab);
   }
   const rst = document.createElement('button'); rst.className = 'link'; rst.textContent = 'Reset to defaults';
-  rst.onclick = () => { t.params = {}; persist(); render(); };
+  rst.onclick = () => { t.params = {}; changed(); };
   f.appendChild(rst);
   return f;
 }
@@ -162,7 +190,7 @@ document.addEventListener('drop', (e) => {
     const from = pipeline.findIndex((t) => t.uid === d.uid); if (from < 0) return;
     const [t] = pipeline.splice(from, 1); if (from < idx) idx--; pipeline.splice(idx, 0, t);
   }
-  persist(); render();
+  changed();
 });
 document.addEventListener('dragend', () => markDrop(null));
 
@@ -172,7 +200,7 @@ function buildInventory() {
     const b = document.createElement('button'); b.className = `inv ${s.group}`; b.draggable = true;
     b.innerHTML = `<i data-lucide="${s.icon}"></i>`;
     b.addEventListener('dragstart', (e) => { hideTip(); e.dataTransfer.setData('text/plain', JSON.stringify({ src: 'inv', type: s.id })); });
-    b.onclick = () => { pipeline.push(makeTile(s.id)); persist(); render(); toast(`Added “${s.short}” to the end of the pipeline`); };
+    b.onclick = () => { pipeline.push(makeTile(s.id)); changed(); toast(`Added “${s.short}” to the end of the pipeline`); };
     b.addEventListener('mouseenter', () => showTip(b, s));
     b.addEventListener('mouseleave', hideTip);
     (s.group === 'neural' ? $('#invNeural') : $('#invClassic')).appendChild(b);
@@ -218,7 +246,8 @@ function loadView(v) {
   $('#reset').disabled = !(v.kind === 'input' && (v.start > 0 || v.duration < v.full - 0.05));
   $('#cutInfo').textContent = v.kind === 'input'
     ? (v.duration < v.full - 0.05 ? `Working section ${fmt(v.start)} – ${fmt(v.start + v.duration)} of ${fmt(v.full)} · the pipeline runs on this section` : `Whole file · ${fmt(v.full)}`)
-    : `Pipeline output · ${v.name}`;
+    : v.kind === 'step' ? `Temp result · ${v.name}` : `Pipeline output · ${v.name}`;
+  render();
 }
 // ---------------------------------------------------------------- spectrogram ribbon (server-rendered image)
 function loadSpec(v) {
@@ -308,12 +337,12 @@ $('#clearSel').onclick = clearSelection;
 $('#cut').onclick = async () => {
   if (!sel) return;
   const r = await api('/api/cut', { start: sel.start, end: sel.end });
-  if (r.ok) { loadView(r.view); toast('Working input trimmed to the selection'); }
+  if (r.ok) { loadView(r.view); refreshCached(); toast('Working input trimmed to the selection'); }
 };
-$('#reset').onclick = async () => { const r = await api('/api/reset', {}); if (r.ok) loadView(r.view); };
+$('#reset').onclick = async () => { const r = await api('/api/reset', {}); if (r.ok) { loadView(r.view); refreshCached(); } };
 $('#save').onclick = async () => {
   if (!currentView) return;
-  const r = await api('/api/save', { kind: currentView.kind, start: sel ? sel.start : null, end: sel ? sel.end : null });
+  const r = await api('/api/save', { kind: currentView.kind, key: currentView.key, start: sel ? sel.start : null, end: sel ? sel.end : null });
   if (r.ok) toast(`Saved ${r.path}`);
 };
 $('#viewInput').onclick = async () => { const r = await api('/api/view/input'); if (r.ok) loadView(r.view); };
@@ -322,33 +351,57 @@ $('#viewOutput').onclick = async () => { const r = await api('/api/view/output')
 async function browse() {
   const r = await api('/api/browse', {});
   if (!r.ok) return;
-  inputName = r.view.name; render(); loadView(r.view);
+  inputName = r.view.name; loadView(r.view); refreshCached();
   $('#viewOutput').disabled = true;
+}
+
+async function showInput() {
+  const r = await api('/api/view/input'); if (r.ok) loadView(r.view);
+}
+async function showStep(t, i) {
+  const c = cachedSteps[t.uid]; if (!c || !c.ready) return;
+  const label = `after step ${i + 1} · ${STEPS[t.type].short}`;
+  const r = await api(`/api/view/step?key=${c.key}&label=${encodeURIComponent(label)}`);
+  if (r.ok) loadView(r.view); else { toast('That result is no longer available, run the step again', true); refreshCached(); }
+}
+
+function checkRefs(upto) {
+  for (const [i, t] of pipeline.slice(0, upto + 1).entries())
+    for (const p of STEPS[t.type].params)
+      if (p.kind === 'ref') {
+        const v = paramVal(t, p);
+        if (v !== 'input' && pipeline.findIndex((x) => x.uid === v) >= i) {
+          toast(`Step ${i + 1} (${STEPS[t.type].short}) mixes with a step that is not before it`, true); return false;
+        }
+      }
+  return true;
+}
+function startJob() {
+  jobRunning = true; runMarks = { running: -1 };
+  $('#run').disabled = true; $('#cancel').disabled = false; render(); poll();
+}
+async function runTo(i) {
+  if (!inputName) { toast('Choose an input file first (click the Input tile)', true); return; }
+  if (!checkRefs(i)) return;
+  const r = await api('/api/run', { preview: true, pipeline: pipeline.slice(0, i + 1).map(({ uid, type, params }) => ({ uid, type, params })) });
+  if (!r.ok) { toast(r.error, true); return; }
+  startJob();
 }
 
 // ---------------------------------------------------------------- run
 $('#run').onclick = async () => {
   if (!inputName) { toast('Choose an input file first (click the Input tile)', true); return; }
   if (!pipeline.length) { toast('The pipeline is empty', true); return; }
-  for (const [i, t] of pipeline.entries())
-    for (const p of STEPS[t.type].params)
-      if (p.kind === 'ref') {
-        const v = paramVal(t, p);
-        if (v !== 'input' && pipeline.findIndex((x) => x.uid === v) >= i) {
-          toast(`Step ${i + 1} (${STEPS[t.type].short}) mixes with a step that is not before it`, true); return;
-        }
-      }
+  if (!checkRefs(pipeline.length - 1)) return;
   const body = { save_all: $('#saveAll').checked, pipeline: pipeline.map(({ uid, type, params }) => ({ uid, type, params })) };
   const r = await api('/api/run', body);
   if (!r.ok) { toast(r.error, true); return; }
-  runMarks = { running: -1, done: 0 }; document.querySelectorAll('.tile').forEach((el) => el.classList.remove('done', 'running'));
-  $('#run').disabled = true; $('#cancel').disabled = false;
-  poll();
+  startJob();
 };
 $('#cancel').onclick = () => api('/api/cancel', {});
 $('#openFolder').onclick = () => api('/api/open_folder', {});
-$('#resetPipe').onclick = () => { loadDefault(); render(); };
-$('#clearPipe').onclick = () => { pipeline = []; persist(); render(); };
+$('#resetPipe').onclick = () => { loadDefault(); changed(); };
+$('#clearPipe').onclick = () => { pipeline = []; changed(); };
 
 function poll() {
   clearInterval(polling);
@@ -362,14 +415,28 @@ function poll() {
       ? `${s.message} · ${Math.round((s.fraction || 0) * 100)}% · ${fmt(s.elapsed)} elapsed${last ? '  —  ' + last : ''}`
       : s.message;
     const tiles = [...document.querySelectorAll('.tile:not(.input)')];
-    runMarks = { running: s.running ? s.step - 1 : -1, done: s.running || s.error ? s.step - 1 : tiles.length };
-    tiles.forEach((el, i) => { el.classList.toggle('running', i === runMarks.running); el.classList.toggle('done', i < runMarks.done); });
+    const runningIdx = s.running ? s.step - 1 : -1;
+    if (runningIdx !== runMarks.running) {
+      runMarks = { running: runningIdx };
+      tiles.forEach((el, i) => el.classList.toggle('running', i === runningIdx));
+      if (s.running && s.step > 1) refreshCached();          // earlier steps just finished
+    }
     if (!s.running) {
-      clearInterval(polling); $('#run').disabled = false; $('#cancel').disabled = true;
-      if (s.error) { toast(s.error === 'cancelled' ? 'Run cancelled' : s.error.slice(0, 600), s.error !== 'cancelled'); return; }
+      clearInterval(polling); jobRunning = false; runMarks = { running: -1 };
+      $('#run').disabled = false; $('#cancel').disabled = true;
+      if (s.error) { render(); refreshCached(); toast(s.error === 'cancelled' ? 'Run cancelled' : s.error.slice(0, 600), s.error !== 'cancelled'); return; }
+      if (s.preview) {
+        const i = pipeline.findIndex((t) => t.uid === s.target);
+        cachedSteps[s.target] = { key: s.key, ready: true };
+        if (i >= 0) await showStep(pipeline[i], i);
+        refreshCached();
+        toast(s.message);
+        return;
+      }
       $('#viewOutput').disabled = false; $('#openFolder').disabled = false;
       toast('Done — showing the output in the ribbon');
       const v = await api('/api/view/output'); if (v.ok) loadView(v.view);
+      refreshCached();
     }
   }, 700);
 }
@@ -381,8 +448,8 @@ function poll() {
   buildInventory();
   loadDefault();                     // the page always opens with the full default pipeline
   inputName = r.input; render();
-  if (r.input) { const v = await api('/api/view/input'); if (v.ok) loadView(v.view); }
+  if (r.input) { const v = await api('/api/view/input'); if (v.ok) loadView(v.view); refreshCached(); }
   const p = await api('/api/progress');
-  if (p.running) { $('#run').disabled = true; $('#cancel').disabled = false; poll(); }
+  if (p.running) startJob();
   icons();
 })();

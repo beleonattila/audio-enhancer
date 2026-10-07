@@ -221,6 +221,39 @@ DEFAULT_PIPELINE = ['cvse', 'sep_sidon', 'dfn', 'repair', 'mix', 'eq', 'deesser'
 DEFAULT_OVERRIDES = {'dfn': {'atten': 8}, 'mix': {'percent': 50, 'with': '#1'}}   # '#1' = first step of the pipeline
 
 
+def make_key(prev, kind, params, extra=''):
+    return hashlib.sha1(json.dumps([prev, kind, params, extra], sort_keys=True).encode()).hexdigest()[:16]
+
+
+def resolve_params(t):
+    spec = STEPS[t['type']]
+    return {pp['key']: (t.get('params') or {}).get(pp['key'], pp['default']) for pp in spec['params']}
+
+
+def input_key(source):
+    st = os.stat(source['path'])
+    return make_key(f"{source['path']}|{st.st_size}|{st.st_mtime}", 'input', [source['start'], source['end']])
+
+
+def chain_keys(source, pipeline):
+    """Cache key of every step's result for this input section and pipeline; {'input': key, uid: key, ...}."""
+    ikey = input_key(source)
+    keys, prev = {'input': ikey}, ikey
+    for t in pipeline:
+        params = resolve_params(t)
+        extra = ''
+        if t['type'] == 'mix':
+            w = params['with']
+            if w and w.startswith('#'): w = pipeline[int(w[1:]) - 1]['uid']
+            extra = keys.get(w, ikey) if w not in ('input', '') else ikey
+        prev = keys[t['uid']] = make_key(prev, t['type'], params, extra)
+    return keys
+
+
+def cache_path(key):
+    return os.path.join(CACHE, key + '.wav')
+
+
 def registry():
     return [{k: v for k, v in s.items() if k != 'fn'} for s in STEPS.values()]
 
@@ -229,10 +262,13 @@ def registry():
 class Job:
     """Runs a pipeline in a background thread. `state` is polled by the UI."""
 
-    def __init__(self, source, pipeline, out_dir, save_all):
-        self.source, self.pipeline, self.out_dir, self.save_all = source, pipeline, out_dir, save_all
+    def __init__(self, source, pipeline, out_dir, save_all, preview=False):
+        """preview=True: run the pipeline (a prefix of it) only into the cache; the last step's cached file is the temp
+        result shown in the ribbon. Nothing is exported."""
+        self.source, self.pipeline, self.out_dir, self.save_all, self.preview = source, pipeline, out_dir, save_all, preview
         self.state = dict(running=True, step=0, n=len(pipeline), name='', fraction=0.0, message='starting',
-                          log=[], outputs=[], final=None, error=None, started=time.time())
+                          log=[], outputs=[], final=None, error=None, started=time.time(), preview=preview,
+                          target=pipeline[-1]['uid'] if pipeline else None, key=None)
         self.cancelled, self.popen, self.results = False, None, {}
         self.duration = source['end'] - source['start']
         threading.Thread(target=self._run, daemon=True).start()
@@ -289,7 +325,7 @@ class Job:
 
     # internals
     def _key(self, prev, kind, params, extra=''):
-        return hashlib.sha1(json.dumps([prev, kind, params, extra], sort_keys=True).encode()).hexdigest()[:16]
+        return make_key(prev, kind, params, extra)
 
     def _cached(self, key, make):
         path = os.path.join(CACHE, key + '.wav')
@@ -300,34 +336,35 @@ class Job:
 
     def _run(self):
         try:
-            s = self.source; st = os.stat(s['path'])
-            ikey = self._key(f"{s['path']}|{st.st_size}|{st.st_mtime}", 'input', [s['start'], s['end']])
+            s = self.source
+            all_keys = chain_keys(s, self.pipeline)
+            ikey = all_keys['input']
             self.keys = {'input': ikey}
             self.results['input'] = self._cached(ikey, lambda o: self.ff(
                 '-ss', str(s['start']), '-t', str(self.duration), '-i', s['path'], '-map', '0:a:0', '-c:a', 'pcm_f32le', o))
-            prev, prev_key = self.results['input'], ikey
-            os.makedirs(self.out_dir, exist_ok=True)
+            prev = self.results['input']
+            if not self.preview: os.makedirs(self.out_dir, exist_ok=True)
             for i, t in enumerate(self.pipeline, 1):
                 spec = STEPS[t['type']]
-                params = {pp['key']: t.get('params', {}).get(pp['key'], pp['default']) for pp in spec['params']}
-                extra = ''
-                if t['type'] == 'mix':
-                    w = params['with']
-                    if w and w.startswith('#'): w = self.pipeline[int(w[1:]) - 1]['uid']
-                    extra = self.keys.get(w, ikey) if w not in ('input', '') else ikey
-                key = self._key(prev_key, t['type'], params, extra)
+                params, key = resolve_params(t), all_keys[t['uid']]
                 self.state.update(step=i, name=spec['name'], fraction=0.0, message=f"Step {i}/{len(self.pipeline)}: {spec['name']}")
                 t0 = time.time()
-                hit = os.path.exists(os.path.join(CACHE, key + '.wav'))
+                hit = os.path.exists(cache_path(key))
                 prev = self._cached(key, lambda o, prev=prev: spec['fn'](self, prev, o, params))
                 self.log(f"{i}. {spec['short']}: {'cached' if hit else f'{time.time() - t0:.0f}s'}")
-                self.results[t['uid']], self.keys[t['uid']], prev_key = prev, key, key
-                if self.save_all:
+                self.results[t['uid']], self.keys[t['uid']] = prev, key
+                if self.save_all and not self.preview:
                     self._export(prev, os.path.join(self.out_dir, f"{i:02d}_{t['type']}.wav"))
                     self.state['outputs'].append(f"{i:02d}_{t['type']}.wav")
-            final = os.path.join(self.out_dir, 'final.wav')
-            self._export(prev, final, mp3=True)
-            self.state.update(final=final, fraction=1.0, message=f"Done in {time.time() - self.state['started']:.0f}s -> {self.out_dir}")
+            took = f"{time.time() - self.state['started']:.0f}s"
+            if self.preview:
+                last = STEPS[self.pipeline[-1]['type']]['short']
+                self.state.update(key=self.keys[self.pipeline[-1]['uid']], fraction=1.0,
+                                  message=f"Preview ready in {took}: result after step {len(self.pipeline)} ({last})")
+            else:
+                final = os.path.join(self.out_dir, 'final.wav')
+                self._export(prev, final, mp3=True)
+                self.state.update(final=final, fraction=1.0, message=f"Done in {took} -> {self.out_dir}")
         except Cancelled:
             self.state.update(message='Cancelled', error='cancelled')
         except Exception as e:

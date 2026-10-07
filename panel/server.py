@@ -72,7 +72,20 @@ def spectrogram_png(src, start, dur, w=2400, h=300):
     return out
 
 
-def view(kind):
+def step_path(key):
+    """Cached result of a pipeline step (the 'temp file' of a run-to-step), by its cache key."""
+    if not key or not re.fullmatch(r'[0-9a-f]{16}', key): return None
+    p = engine.cache_path(key)
+    return p if os.path.exists(p) else None
+
+
+def view(kind, key=None, label=None):
+    if kind == 'step':
+        p = step_path(key)
+        if not p: return None
+        sr, _, dur = engine.info(p)
+        return dict(kind='step', key=key, name=label or 'step result', duration=dur, nyquist=sr / 2, peaks=peaks(p),
+                    url=f"/api/audio/step?key={key}&t={time.time()}", spec=f"/api/spectrogram/step?key={key}&t={time.time()}")
     if kind == 'output':
         if not S['final']: return None
         sr = engine.info(S['final'])[0]
@@ -118,12 +131,15 @@ def load():
 
 @app.get('/api/view/<kind>')
 def get_view(kind):
-    v = view(kind)
+    v = view(kind, request.args.get('key'), request.args.get('label'))
     return jsonify(ok=v is not None, view=v)
 
 
 @app.get('/api/audio/<kind>')
 def audio(kind):
+    if kind == 'step':
+        p = step_path(request.args.get('key'))
+        return send_file(preview_wav(p, 0, engine.info(p)[2], 'step'), conditional=True)
     if kind == 'output':
         return send_file(preview_wav(S['final'], 0, engine.info(S['final'])[2], 'output'), conditional=True)
     if S['start'] == 0 and S['end'] >= S['full'] and os.path.splitext(S['path'])[1].lower() in ('.mp3', '.flac', '.wav', '.ogg', '.m4a'):
@@ -133,6 +149,8 @@ def audio(kind):
 
 @app.get('/api/spectrogram/<kind>')
 def spectrogram(kind):
+    if kind == 'step':
+        return send_file(spectrogram_png(step_path(request.args.get('key')), 0, None), mimetype='image/png')
     if kind == 'output':
         return send_file(spectrogram_png(S['final'], 0, None), mimetype='image/png')
     whole = S['start'] == 0 and S['end'] >= S['full']
@@ -157,6 +175,8 @@ def save():
     j = request.json
     if j['kind'] == 'output':
         src, base = S['final'], 0.0
+    elif j['kind'] == 'step':
+        src, base = step_path(j.get('key')), 0.0
     else:
         src, base = S['path'], S['start']
     a = j.get('start'); b = j.get('end')
@@ -177,11 +197,26 @@ def run():
     if not S['path']: return jsonify(ok=False, error='choose an input file first')
     if S['job'] and S['job'].state['running']: return jsonify(ok=False, error='a run is already in progress')
     j = request.json
+    src = dict(path=S['path'], start=S['start'], end=S['end'])
+    if j.get('preview'):                       # run up to a step: result stays in the cache as the temp file
+        S['job'] = engine.Job(src, j['pipeline'], None, False, preview=True)
+        return jsonify(ok=True)
     stem = os.path.splitext(os.path.basename(S['path']))[0]
     sect = '' if S['start'] == 0 and S['end'] >= S['full'] else f"_{int(S['start'])}s-{int(S['end'])}s"
     S['out_dir'] = os.path.join(ROOT, 'out', 'panel', stem, time.strftime('%Y%m%d-%H%M%S') + sect)
-    S['job'] = engine.Job(dict(path=S['path'], start=S['start'], end=S['end']), j['pipeline'], S['out_dir'], bool(j.get('save_all')))
+    S['job'] = engine.Job(src, j['pipeline'], S['out_dir'], bool(j.get('save_all')))
     return jsonify(ok=True)
+
+
+@app.post('/api/cached')
+def cached():
+    """Which pipeline steps already have a result for the current input section and settings."""
+    if not S['path']: return jsonify(ok=True, steps={})
+    try:
+        keys = engine.chain_keys(dict(path=S['path'], start=S['start'], end=S['end']), request.json['pipeline'])
+    except (KeyError, ValueError, IndexError):
+        return jsonify(ok=True, steps={})
+    return jsonify(ok=True, steps={uid: dict(key=k, ready=os.path.exists(engine.cache_path(k))) for uid, k in keys.items() if uid != 'input'})
 
 
 @app.get('/api/progress')

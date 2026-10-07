@@ -83,6 +83,14 @@ main { display: grid; grid-template-columns: minmax(380px, 560px) minmax(0, 1fr)
 .tile:hover { border-color: var(--c); box-shadow: var(--g); }
 .tile.dragging { opacity: .4; }
 .tile.running { border-color: var(--c); box-shadow: var(--g); animation: pulse 1.2s ease-in-out infinite; }
+.tile.showing { border-color: var(--lime); box-shadow: 0 0 0 1px var(--lime), 0 0 22px rgba(57, 255, 136, .28);
+                background: linear-gradient(180deg, #13261f, var(--panel)); }
+.tag { margin-left: 8px; padding: 1px 7px; border-radius: 6px; font-size: 10px; font-weight: 700; letter-spacing: .5px;
+       text-transform: uppercase; color: #04120a; background: var(--lime); box-shadow: 0 0 10px rgba(57, 255, 136, .5); vertical-align: 2px; }
+.tile.done { cursor: pointer; }
+.iconbtn.runto { color: var(--lime); }
+.iconbtn.runto:not(:disabled):hover { background: rgba(57, 255, 136, .12); color: var(--lime); box-shadow: 0 0 10px rgba(57, 255, 136, .35); }
+.iconbtn:disabled { opacity: .25; cursor: default; background: none; }
 .tile.done .ico::after { content: '✓'; position: absolute; right: -5px; bottom: -5px; width: 15px; height: 15px; border-radius: 50%;
                          background: var(--lime); color: #04120a; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 1px var(--c), 0 0 26px color-mix(in srgb, var(--c) 45%, transparent); } }
