@@ -183,7 +183,8 @@ def separator(ctx, inp, out, model, stem):
 
 
 @step('roformer', 'MelBand RoFormer de-reverb (anvuew; stereo models need real stereo)', 'neural', 'wind',
-      [P('model', 'Model', 'less aggressive', kind='select', options=list(ROFORMER))], short='RoFormer de-reverb')
+      [P('model', 'Model', 'less aggressive', kind='select', options=list(ROFORMER)),
+       P('strength', 'Strength (%)', 100, lo=0, hi=100, step=5)], short='RoFormer de-reverb')
 def _roformer(ctx, inp, out, p):
     model = p['model']
     if model != 'mono':
@@ -194,7 +195,23 @@ def _roformer(ctx, inp, out, p):
     src = inp
     if info(inp)[1] == 1:                     # the separator wants stereo files
         src = out[:-4] + '_st.wav'; ctx.ff('-i', inp, '-ac', '2', '-c:a', 'pcm_f32le', src)
-    separator(ctx, src, out, ROFORMER[model], 'noreverb')
+    # the model's full-strength result is cached on its own (keyed by the input file, which is itself a cache entry), so
+    # changing Strength only re-blends and takes a second instead of re-running the model
+    full = os.path.join(CACHE, f"{os.path.splitext(os.path.basename(inp))[0]}_roformer_{model.replace(' ', '_')}.wav")
+    if not os.path.exists(full):
+        separator(ctx, src, full[:-4] + '.part.wav', ROFORMER[model], 'noreverb')
+        os.replace(full[:-4] + '.part.wav', full)
+    st = p['strength'] / 100
+    if st >= 1:
+        shutil.copyfile(full, out)
+    else:          # the removed part is exactly input - dry, so strength is a linear blend: st * dry + (1 - st) * input
+        dry, sr = sf.read(full, dtype='float32', always_2d=True)
+        x, sri = sf.read(src, dtype='float32', always_2d=True)
+        if sri != sr:
+            from scipy.signal import resample_poly
+            g = np.gcd(sr, sri); x = resample_poly(x, sr // g, sri // g, axis=0).astype(np.float32)
+        n = min(len(x), len(dry))
+        sf.write(out, st * dry[:n] + (1 - st) * x[:n], sr, subtype='FLOAT')
     if src != inp: os.remove(src)
 
 

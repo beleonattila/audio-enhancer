@@ -162,7 +162,11 @@ STEPS = {
             model="Which de-reverb model to use. 'aggressive' removes the most reverb but can thin the voice and swallow "
                   "soft word endings; 'less aggressive' keeps more body and is the safe choice; 'mono' is trained for "
                   "single-channel audio — use it for mono or dual-mono files. It is chosen automatically when the input "
-                  "is mono, because the stereo models leave mono audio unchanged.")),
+                  "is mono, because the stereo models leave mono audio unchanged.",
+            strength="How much of the removed reverb stays out. 100 % uses the model's full result; lower values blend "
+                     "the untouched recording back in, linearly. This is the way to tame the 'aggressive' model: at "
+                     "60–80 % it still removes most of the room — the strongest cue that makes voices sound close to "
+                     "the microphone — while bringing back body and soft word endings it would otherwise swallow.")),
     'uvr_deecho': dict(
         desc="UVR DeEcho-DeReverb (VR architecture): an older echo and reverb remover from Ultimate Vocal Remover; "
              "milder than RoFormer.",
